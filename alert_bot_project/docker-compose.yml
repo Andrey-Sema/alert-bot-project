@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m alert_bot_project.database.migration
+    env_file:
+      - .env
+    restart: "no"
+
+  scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m alert_bot_project.scraper.main
+    env_file:
+      - .env
+    restart: unless-stopped
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 10
+        window: 300s
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    volumes:
+      - pyrogram_session:/data/session
+      - shared_logs:/data/logs
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m alert_bot_project.worker.main
+    env_file:
+      - .env
+    restart: unless-stopped
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 10
+        window: 300s
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    volumes:
+      - shared_logs:/data/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('${REDIS_URL}'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+
+  bot_ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m alert_bot_project.bot.main
+    env_file:
+      - .env
+    restart: unless-stopped
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 10
+        window: 300s
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    volumes:
+      - shared_logs:/data/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import asyncio; asyncio.get_event_loop()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+
+volumes:
+  pyrogram_session:
+    driver: local
+  shared_logs:
+    driver: local
