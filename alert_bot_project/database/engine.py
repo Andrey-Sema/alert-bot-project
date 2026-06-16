@@ -3,12 +3,11 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from alert_bot_project.core_shared.config import config
 
 # Production-grade async engine configuration targeting Supabase instance
-# Relies on host-provided system certificates natively or direct standard connection topologies
 engine = create_async_engine(
     config.DATABASE_URL,
-    pool_pre_ping=True,  # Probes standard connectivity status checks before executing calls
-    pool_size=10,        # Default persistent base limits allocation sizes
-    max_overflow=20,     # Spike connection boundaries ceiling limit configurations
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
     echo=False
 )
 
@@ -16,14 +15,5 @@ engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
-    expire_on_commit=False  # Crucial safety parameter handling long-lived asynchronous tasks
+    expire_on_commit=False
 )
-
-
-async def get_db_session() -> AsyncSession:
-    """Asynchronous context lifecycle operational factory iterator dependency inject."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()

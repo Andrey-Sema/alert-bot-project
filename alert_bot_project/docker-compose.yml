@@ -1,5 +1,19 @@
 version: '3.8'
 
+# Выносим общие настройки в якорь для соблюдения DRY
+x-common-service: &common-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  restart: unless-stopped
+  volumes:
+    - shared_logs:/data/logs
+  depends_on:
+    migrator:
+      condition: service_completed_successfully
+
 services:
   migrator:
     build:
@@ -11,42 +25,31 @@ services:
     restart: "no"
 
   scraper:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *common-service
     command: python -m alert_bot_project.scraper.main
-    env_file:
-      - .env
-    restart: unless-stopped
+    volumes:
+      - pyrogram_session:/data/session
+      - shared_logs:/data/logs
+    expose:
+      - "8001" # Безопасно светим порт метрик только внутри сети Docker
     deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 10
-        window: 300s
       resources:
         limits:
           cpus: '0.5'
           memory: 256M
-    volumes:
-      - pyrogram_session:/data/session
-      - shared_logs:/data/logs
-    depends_on:
-      migrator:
-        condition: service_completed_successfully
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *common-service
     command: python -m alert_bot_project.worker.main
-    env_file:
-      - .env
-    restart: unless-stopped
+    expose:
+      - "8000" # Prometheus заберет метрики отсюда
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 10
-        window: 300s
       resources:
         limits:
           cpus: '1.5'
@@ -54,49 +57,50 @@ services:
         reservations:
           cpus: '0.5'
           memory: 256M
-    volumes:
-      - shared_logs:/data/logs
-    healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('${REDIS_URL}'); r.ping()"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    depends_on:
-      migrator:
-        condition: service_completed_successfully
 
   bot_ui:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *common-service
     command: python -m alert_bot_project.bot.main
-    env_file:
-      - .env
-    restart: unless-stopped
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 10
-        window: 300s
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-    volumes:
-      - shared_logs:/data/logs
     healthcheck:
-      test: ["CMD", "python", "-c", "import asyncio; asyncio.get_event_loop()"]
+      test: ["CMD-SHELL", "pgrep -f 'alert_bot_project.bot.main' || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090" # Защита от прямого доступа извне
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
     depends_on:
-      migrator:
-        condition: service_completed_successfully
+      - worker
+      - scraper
+
+  grafana:
+    image: grafana/grafana:10.0.3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000" # Доступ только через localhost/reverse proxy
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-changeme}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    depends_on:
+      - prometheus
 
 volumes:
   pyrogram_session:
-    driver: local
   shared_logs:
-    driver: local
+  prometheus_data:
+  grafana_data:

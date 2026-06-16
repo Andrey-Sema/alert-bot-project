@@ -1,9 +1,11 @@
 import logging
 from datetime import datetime
-from typing import Optional, List, Set
+from typing import Optional, List
+from sqlalchemy import select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 from alert_bot_project.core_shared.constants import MAX_CUSTOM_TRIGGERS, ODESA_LOCS, OUTSIDE_LOCS
+from alert_bot_project.database.models import UserTrigger
 from alert_bot_project.database.crud import (
     get_or_create_user, add_user_trigger, remove_user_trigger,
     update_user_potvory, update_user_mute
@@ -13,11 +15,6 @@ logger = logging.getLogger("services.user_service")
 
 
 class UserService:
-    """
-    Fix: Completely stripped out session control keywords (begin/commit) to conform to the Unit of Work pattern.
-    Transactions are now explicitly owned by calling middleware/handler contexts.
-    """
-
     def __init__(self, db_session: AsyncSession, redis_client: Redis):
         self.session = db_session
         self.redis = redis_client
@@ -33,18 +30,16 @@ class UserService:
             return True, "Локацію додано до моніторингу"
 
     async def add_custom_trigger(self, user_id: int, trigger_word: str) -> tuple[bool, str]:
-        """Fix: Counts strictly non-static keywords using unified service layer validation schemas."""
         user = await get_or_create_user(self.session, user_id)
-
         static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
         custom_count = len([t for t in user.triggers_set if t not in static_keys])
 
         if custom_count >= MAX_CUSTOM_TRIGGERS:
-            return False, "🚫 Ви вже досягли ліміту у 5 кастомних локацій. Видаліть старі для додавання нових."
+            return False, "🚫 Ви вже досягли ліміту у 5 кастомних локацій."
 
         success = await add_user_trigger(self.session, user_id, trigger_word)
         if success:
-            await self.redis.sadd("has_custom_triggers", str(user_id))
+            await self.redis.sadd("global_custom_triggers", trigger_word)
             return True, "Локацію додано"
 
         return False, "⚠️ Не вдалося зберегти кастомну локацію."
@@ -53,11 +48,12 @@ class UserService:
         await remove_user_trigger(self.session, user_id, trigger_word)
 
         user = await get_or_create_user(self.session, user_id)
-        static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
-        remaining_custom = [t for t in user.triggers_set if t not in static_keys]
+        await self.session.refresh(user, attribute_names=['triggers_rel'])
 
-        if not remaining_custom:
-            await self.redis.srem("has_custom_triggers", str(user_id))
+        stmt = select(exists().where(UserTrigger.trigger_word == trigger_word))
+        res = await self.session.execute(stmt)
+        if not res.scalar():
+            await self.redis.srem("global_custom_triggers", trigger_word)
 
         return True, "Локацію видалено"
 

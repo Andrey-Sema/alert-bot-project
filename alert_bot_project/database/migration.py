@@ -21,7 +21,6 @@ MIGRATION_MAP = {
 
 
 async def run_legacy_keys_migration(session: AsyncSession):
-    """Executes atomic batch migration for legacy location keys."""
     async with session.begin():
         stmt_check = select(UserTrigger).where(UserTrigger.trigger_word.in_(list(MIGRATION_MAP.keys())))
         res = await session.execute(stmt_check)
@@ -33,17 +32,35 @@ async def run_legacy_keys_migration(session: AsyncSession):
 
         for entry in legacy_entries:
             new_key = MIGRATION_MAP.get(entry.trigger_word)
-            try:
-                # Attempt to update to the new invariant key
-                stmt_update = update(UserTrigger).where(
-                    UserTrigger.user_id == entry.user_id,
-                    UserTrigger.trigger_word == entry.trigger_word
-                ).values(trigger_word=new_key)
-                await session.execute(stmt_update)
-            except IntegrityError:
-                # Key already exists: remove old one
-                await session.execute(delete(UserTrigger).where(
-                    UserTrigger.user_id == entry.user_id,
-                    UserTrigger.trigger_word == entry.trigger_word
-                ))
+
+            # SAVEPOINT: Защищаем основную транзакцию от InternalError(aborted)
+            async with session.begin_nested():
+                try:
+                    stmt_update = update(UserTrigger).where(
+                        UserTrigger.user_id == entry.user_id,
+                        UserTrigger.trigger_word == entry.trigger_word
+                    ).values(trigger_word=new_key)
+                    await session.execute(stmt_update)
+                except IntegrityError:
+                    # Savepoint автоматически откатился. Безопасно удаляем дубль.
+                    await session.execute(delete(UserTrigger).where(
+                        UserTrigger.user_id == entry.user_id,
+                        UserTrigger.trigger_word == entry.trigger_word
+                    ))
+
     logger.info("Migration finalized.")
+
+
+if __name__ == "__main__":
+    import asyncio
+    from alert_bot_project.database.engine import AsyncSessionLocal
+
+
+    async def standalone_bootstrap():
+        print("Starting manual safe database schema keys conversion routine...")
+        async with AsyncSessionLocal() as session:
+            await run_legacy_keys_migration(session)
+        print("Data migration workflow finalized cleanly.")
+
+
+    asyncio.run(standalone_bootstrap())

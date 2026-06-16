@@ -4,7 +4,6 @@ from aiogram.fsm.state import StatesGroup, State
 
 
 class CustomTriggerStates(StatesGroup):
-    """FSM states tracking custom phrase user registration flows."""
     waiting_for_keyword = State()
 
 

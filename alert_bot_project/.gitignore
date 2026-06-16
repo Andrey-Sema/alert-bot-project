@@ -1,96 +1,100 @@
 # ============================================================
-#  Python
+#  Системный Python кэш и изоляция окружения
 # ============================================================
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg
+*.pyc
+*.pyo
+*.pyd
 *.egg-info/
+.eggs/
 dist/
 build/
-eggs/
-parts/
-var/
-sdist/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-.installed.cfg
-MANIFEST
 
-# ============================================================
-#  Virtual environments
-# ============================================================
 .venv/
 venv/
 env/
-ENV/
-env.bak/
-venv.bak/
 .python-version
 
 # ============================================================
-#  Environment & Secrets
+#  Секреты, Конфиги и Токены (КРИТИЧЕСКИ ВАЖНО)
 # ============================================================
 .env
 .env.*
 *.env
-!*.env.example
-!*.env.template
+!.env.example
+!.env.template
 
-# ============================================================
-#  Telegram / Pyrogram sessions
-# ============================================================
+# Сессии Pyrogram / Telegram
 *.session
 *.session-journal
 
 # ============================================================
-#  PyCharm / JetBrains
+#  Базы данных, Бэкапы и Дампы (Защита от утечки данных)
+# ============================================================
+# Только дампы и бэкапы, но НЕ миграции
+*.dump
+*.dump.sql
+*.sql.gz
+backup*.sql
+export*.sql
+backup*.tar
+*.tar.gz
+*.tar.bz2
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================================
+#  Docker и Локальная Оркестрация
+# ============================================================
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.dev.yml
+.dockerignore.local
+
+# ============================================================
+#  Runtime Данные и Логи контейнеров
+# ============================================================
+data/
+logs/
+!data/.gitkeep
+!logs/.gitkeep
+*.log
+*.pid
+
+# ============================================================
+#  IDE / Редакторы (PyCharm, VS Code)
 # ============================================================
 .idea/
 *.iml
 *.iws
 *.ipr
-out/
-.idea_modules/
-
-# ============================================================
-#  VS Code
-# ============================================================
 .vscode/
 *.code-workspace
 .history/
 
 # ============================================================
-#  Logs & runtime data
+#  Тестирование, Линтеры и Статический Анализ
 # ============================================================
-/data/
-logs/
-*.log
-*.log.*
-*.json.log
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+test-results/
+
+.mypy_cache/
+.ruff_cache/
 
 # ============================================================
-#  Docker
-# ============================================================
-.dockerignore.local
-
-# ============================================================
-#  OS artefacts
+#  Мусор операционных систем
 # ============================================================
 # macOS
 .DS_Store
-.AppleDouble
-.LSOverride
 ._*
-.Spotlight-V100
-.Trashes
 
 # Windows
 Thumbs.db
-Thumbs.db:encryptable
-ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 *.lnk
@@ -99,46 +103,13 @@ $RECYCLE.BIN/
 *~
 .fuse_hidden*
 .directory
-.Trash-*
-.nfs*
 
 # ============================================================
-#  Testing & coverage
+#  Большие файлы и архивы
 # ============================================================
-.pytest_cache/
-.coverage
-.coverage.*
-coverage.xml
-htmlcov/
-.tox/
-.nox/
-nosetests.xml
-test-results/
-*.pytest_cache
-
-# ============================================================
-#  Type checkers & linters
-# ============================================================
-.mypy_cache/
-.dmypy.json
-dmypy.json
-.pyre/
-.pytype/
-.ruff_cache/
-
-# ============================================================
-#  Jupyter / IPython
-# ============================================================
-.ipynb_checkpoints/
-profile_default/
-ipython_config.py
-*.ipynb
-
-# ============================================================
-#  Misc
-# ============================================================
-*.bak
-*.swp
-*.swo
-*.tmp
-*.pid
+*.zip
+*.7z
+*.rar
+*.mp4
+*.avi
+*.mov

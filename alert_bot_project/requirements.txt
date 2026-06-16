@@ -6,3 +6,4 @@ asyncpg==0.30.0
 redis==5.2.1
 pyrogram==2.0.106
 tgcrypto==1.2.5
+prometheus-client==0.17.1

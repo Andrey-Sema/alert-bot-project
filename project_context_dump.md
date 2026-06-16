@@ -1,5 +1,5 @@
 # PROJECT CONTEXT DUMP: .
-Generated on: Sun Jun 14 17:17:32 2026
+Generated on: Tue Jun 16 11:49:52 2026
 
 Это единый файл контекста проекта для анализа LLM.
 ---
@@ -194,18 +194,11 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 10
-        window: 300s
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
     volumes:
       - pyrogram_session:/data/session
       - shared_logs:/data/logs
+    ports:
+      - "8001:8001" # Порт для Prometheus
     depends_on:
       migrator:
         condition: service_completed_successfully
@@ -218,22 +211,13 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 10
-        window: 300s
-      resources:
-        limits:
-          cpus: '1.5'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
     volumes:
       - shared_logs:/data/logs
+    ports:
+      - "8000:8000" # Порт для Prometheus
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('${REDIS_URL}'); r.ping()"]
+      # Настоящий хелсчек: проверяем, что воркер отдает метрики
+      test: ["CMD", "curl", "-f", "http://localhost:8000/metrics"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -250,32 +234,272 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 10
-        window: 300s
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
     volumes:
       - shared_logs:/data/logs
-    healthcheck:
-      test: ["CMD", "python", "-c", "import asyncio; asyncio.get_event_loop()"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
     depends_on:
       migrator:
         condition: service_completed_successfully
+
+  # --- OBSERVABILITY STACK ---
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  grafana:
+    image: grafana/grafana:10.0.3
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin # Смени на проде
+    depends_on:
+      - prometheus
 
 volumes:
   pyrogram_session:
     driver: local
   shared_logs:
     driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+```
+
+---
+
+## FILE: alert_bot_project\README.md
+```text
+<div align="center">
+
+# 🛡️ OdesaAlert Bot
+
+**Персональна система моніторингу повітряних загроз для Одеси та області**
+
+Перехоплює повідомлення з інформаційних каналів · Аналізує загрози в реальному часі · Надсилає точкові сповіщення за вашим районом
+
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![aiogram](https://img.shields.io/badge/aiogram-3.18-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://aiogram.dev)
+[![Redis](https://img.shields.io/badge/Redis-Streams-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-asyncpg-336791?style=flat-square&logo=postgresql&logoColor=white)](https://postgresql.org)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
+
+</div>
+
+---
+
+## Як це працює
+
+Система складається з чотирьох незалежних сервісів, які запускаються разом через Docker Compose:
+
+```
+Telegram-канал
+      │
+      ▼
+ [scraper]  ← Pyrogram userbot, слухає обраний канал
+      │  XADD
+      ▼
+ [Redis Stream]  ← персистентна черга alerts_stream
+      │  XREADGROUP
+      ▼
+ [worker]  ← аналізує текст, підбирає користувачів, розсилає
+      │
+      ├─→ [PostgreSQL]  ← налаштування користувачів, тригери
+      └─→ [bot_ui]  ← aiogram бот, приймає команди від користувача
+```
+
+**Scraper** (Pyrogram) слухає вказаний канал і пише кожне повідомлення в Redis Stream.  
+**Worker** читає стрім, запускає regex-аналіз по двомовним патернам (UA + RU), знаходить релевантних користувачів через PostgreSQL і розсилає сповіщення трьома хвилями з затримкою.  
+**Bot UI** (aiogram 3) — інтерфейс налаштувань: вибір районів, режим тиші, кастомні тригери.
+
+---
+
+## Можливості
+
+**Точкові сповіщення за районом**
+Користувач обирає конкретні райони Одеси або населені пункти області. Бот надсилає повідомлення лише коли загроза згадана саме у вашому напрямку.
+
+**Двомовний аналіз**
+Regex-патерни покривають назви локацій українською та російською одночасно. Все зводиться до єдиного інваріантного ключа — `"peresyp"`, `"tairovo"` тощо.
+
+**Категорії загроз**
+Окремо відстежуються БПЛА / шахеди (`Мопеди`) та ракети / балістика (`Ракети`). Кожну категорію можна вимкнути.
+
+**Кастомні тригери**
+До 5 власних слів або фраз — назва вулиці, ЖК, орієнтир. Якщо слово з'явиться в повідомленні каналу — прийде сповіщення.
+
+**Режим тиші (MUTE)**
+Вимкнути сповіщення на 1, 2, 4 години або до 07:00. Нічний режим автоматично надсилає сповіщення без звуку з 22:00 до 07:00.
+
+**Триступеневе сповіщення**
+Перше повідомлення → через 5 сек друге → через 60 сек третє з кнопкою підтвердження. При натисканні «Прийнято» бот замовкає на 10 хвилин.
+
+**Dead Letter Queue**
+Повідомлення, які не вдалося обробити 5 разів, переміщуються в `dead_letter_queue` для ручного розбору.
+
+---
+
+## Стек
+
+| Шар | Технологія |
+|-----|-----------|
+| Telegram Bot API | aiogram 3.18 |
+| Telegram Userbot | Pyrogram 2.0 + TgCrypto |
+| Черга повідомлень | Redis Streams (XADD / XREADGROUP) |
+| База даних | PostgreSQL через asyncpg + SQLAlchemy 2.0 async |
+| Валідація конфігу | Pydantic Settings v2 |
+| Інфраструктура | Docker Compose (4 сервіси) |
+| Логування | JSON structured logs + RotatingFileHandler |
+
+---
+
+## Швидкий старт
+
+### 1. Клонувати репозиторій
+
+```bash
+git clone https://github.com/your-username/odesa-alert-bot.git
+cd odesa-alert-bot
+```
+
+### 2. Створити `.env`
+
+```bash
+cp .env.example .env
+```
+
+Заповнити змінні:
+
+```env
+# Бот (від @BotFather)
+BOT_TOKEN=your_bot_token_here
+
+# ID каналу для моніторингу (з мінусом для груп, напр. -1001234567890)
+GROUP_ID=-1001234567890
+
+# Pyrogram userbot (з my.telegram.org)
+API_ID=12345678
+API_HASH=abcdef1234567890abcdef1234567890
+
+# PostgreSQL (Supabase або локальний)
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname
+
+# Redis
+REDIS_URL=redis://localhost:6379/0
+
+# Опційно
+NIGHT_START_HOUR=22
+NIGHT_END_HOUR=7
+LOG_LEVEL=INFO
+TELEGRAM_MAX_RETRY_SECONDS=180
+```
+
+### 3. Авторизувати Pyrogram (одноразово)
+
+```bash
+python -c "
+from pyrogram import Client
+import asyncio, os
+async def auth():
+    async with Client('twink_account', api_id=int(os.environ['API_ID']), api_hash=os.environ['API_HASH']):
+        print('Done')
+asyncio.run(auth())
+"
+```
+
+Сесійний файл `twink_account.session` покласти в `./data/session/`.
+
+### 4. Запустити
+
+```bash
+docker compose up -d
+```
+
+Docker Compose послідовно запустить:
+1. `migrator` — накатить міграцію ключів (і зупиниться)
+2. `scraper`, `worker`, `bot_ui` — основні сервіси
+
+### 5. Перевірити статус
+
+```bash
+docker compose ps
+docker compose logs worker --tail=50 -f
+```
+
+---
+
+## Структура проекту
+
+```
+alert_bot_project/
+├── bot/
+│   ├── handlers/          # start.py, settings.py — aiogram хендлери
+│   ├── keyboards/         # builders.py — inline клавіатури
+│   └── middlewares/       # db.py — DatabaseMiddleware (Unit of Work)
+├── core_shared/
+│   ├── callbacks.py       # aiogram CallbackData типи
+│   ├── config.py          # Pydantic Settings
+│   ├── constants.py       # локації, патерни, шаблони повідомлень
+│   ├── schemas.py         # AlertMessage (Pydantic)
+│   └── text_processor.py  # regex-аналіз з precompiled patterns
+├── database/
+│   ├── crud.py            # async CRUD операції
+│   ├── engine.py          # SQLAlchemy async engine
+│   ├── migration.py       # міграція legacy ключів
+│   └── models.py          # UserSettings, UserTrigger
+├── scraper/
+│   ├── main.py            # Pyrogram клієнт
+│   └── publisher.py       # Redis XADD
+├── services/
+│   └── user_service.py    # бізнес-логіка (без транзакцій)
+└── worker/
+    ├── broadcaster.py     # розсилка + delayed queue
+    └── main.py            # Redis consumer group, основний цикл
+```
+
+---
+
+## Змінні оточення
+
+| Змінна | Обов'язкова | За замовчуванням | Опис |
+|--------|:-----------:|:----------------:|------|
+| `BOT_TOKEN` | ✅ | — | Токен бота від @BotFather |
+| `GROUP_ID` | ✅ | — | ID каналу для моніторингу |
+| `API_ID` | ✅ | — | Pyrogram API ID |
+| `API_HASH` | ✅ | — | Pyrogram API Hash |
+| `DATABASE_URL` | ✅ | — | PostgreSQL connection string (asyncpg) |
+| `REDIS_URL` | | `redis://localhost:6379/0` | Redis connection string |
+| `NIGHT_START_HOUR` | | `22` | Початок нічного режиму |
+| `NIGHT_END_HOUR` | | `7` | Кінець нічного режиму |
+| `LOG_LEVEL` | | `INFO` | Рівень логування |
+| `LOG_DIR` | | `/data/logs` | Директорія для лог-файлів |
+| `TELEGRAM_MAX_RETRY_SECONDS` | | `180` | Максимальний час retry при 429 |
+
+---
+
+## ⚠️ Важливо
+
+Цей бот є **допоміжним інструментом** і не замінює офіційну державну систему повітряної тривоги України. У разі небезпеки завжди прямуйте до найближчого укриття незалежно від сповіщень бота.
+
+Слідкуйте за офіційними джерелами: [Повітряна тривога](https://alerts.in.ua)
+
+---
+
+<div align="center">
+
+Зроблено для Одеси · Слава Україні 🇺🇦
+
+</div>
 ```
 
 ---
@@ -289,7 +513,8 @@ SQLAlchemy==2.0.37
 asyncpg==0.30.0
 redis==5.2.1
 pyrogram==2.0.106
-tgcrypto==1.2.5
+# tgcrypto==1.2.5
+prometheus-client==0.17.1
 ```
 
 ---
@@ -324,20 +549,22 @@ redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
 ```python
 import asyncio
 import logging
-import sys
 from alert_bot_project.core_shared.logging_config import setup_logging
-from alert_bot_project.bot.loader import bot, dp
+from alert_bot_project.bot.loader import bot, dp, redis_client
 from alert_bot_project.bot.handlers import start, settings
+from alert_bot_project.bot.middlewares.db import DatabaseMiddleware
 
-# Setup logging architecture parameters directly for bot scope
 setup_logging("tg_bot_ui")
 logger = logging.getLogger("bot.main")
 
 
 async def main():
-    logger.info("Configuring routers mapping parameters arrays...")
+    logger.info("Configuring routers and connecting middlewares...")
 
-    # Include functional feature logic modules blocks
+    # КРИТИЧЕСКИ ВАЖНО: Регистрируем мидлварь БД для всех апдейтов
+    dp.update.middleware(DatabaseMiddleware())
+
+    # Подключаем роутеры с бизнес-логикой
     dp.include_router(start.router)
     dp.include_router(settings.router)
 
@@ -348,7 +575,9 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
+        # Корректно закрываем все открытые соединения при шатдауне
         await bot.session.close()
+        await redis_client.close()
 
 
 if __name__ == "__main__":
@@ -387,7 +616,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from alert_bot_project.database.crud import get_or_create_user
 from alert_bot_project.services.user_service import UserService
 from alert_bot_project.bot.loader import redis_client
-from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS, KYIV_TZ
+from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS, KYIV_TZ, KR_POTVORY
 from alert_bot_project.core_shared.callbacks import (
     GroupNavCallback, LocationToggleCallback, ThreatCategoryCallback,
     MutePresetCallback, CustomActionCallback, CustomTriggerStates
@@ -397,6 +626,7 @@ from alert_bot_project.bot.keyboards.builders import (
     build_threat_categories_keyboard, build_mute_options_keyboard,
     build_custom_triggers_management_keyboard
 )
+from alert_bot_project.core_shared.text_processor import TextProcessor
 
 logger = logging.getLogger("bot.handlers.settings")
 router = Router(name="settings_router")
@@ -411,10 +641,9 @@ async def show_group_selection(callback: CallbackQuery):
 
 @router.callback_query(F.data == "menu:custom_manage")
 async def show_custom_phrases_menu(callback: CallbackQuery, db_session: AsyncSession):
-    async with db_session.begin():
-        user = await get_or_create_user(db_session, callback.from_user.id)
-        static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
-        custom_phrases = {t for t in user.triggers_set if t not in static_keys}
+    user = await get_or_create_user(db_session, callback.from_user.id)
+    static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
+    custom_phrases = {t for t in user.triggers_set if t not in static_keys}
 
     await callback.message.edit_text(
         text="✍️ <b>Ваші кастомні фрази для відстеження:</b>\n\nНатисніть на фразу, щоб видалити її з бази.",
@@ -425,13 +654,10 @@ async def show_custom_phrases_menu(callback: CallbackQuery, db_session: AsyncSes
 
 @router.callback_query(GroupNavCallback.filter())
 async def show_paginated_locations(callback: CallbackQuery, callback_data: GroupNavCallback, db_session: AsyncSession):
-    async with db_session.begin():
-        user = await get_or_create_user(db_session, callback.from_user.id)
-        triggers = user.triggers_set
-
+    user = await get_or_create_user(db_session, callback.from_user.id)
     await callback.message.edit_text(
         text="Оберіть точні локації для моніторингу:",
-        reply_markup=build_locations_paginated_keyboard(callback_data.group, triggers, callback_data.page)
+        reply_markup=build_locations_paginated_keyboard(callback_data.group, user.triggers_set, callback_data.page)
     )
     await callback.answer()
 
@@ -439,27 +665,27 @@ async def show_paginated_locations(callback: CallbackQuery, callback_data: Group
 @router.callback_query(LocationToggleCallback.filter())
 async def toggle_location_trigger(callback: CallbackQuery, callback_data: LocationToggleCallback,
                                   db_session: AsyncSession):
-    async with db_session.begin():
-        service = UserService(db_session, redis_client)
-        await service.toggle_location(callback.from_user.id, callback_data.inv_key)
-        user = await get_or_create_user(db_session, callback.from_user.id)
-        updated_triggers = user.triggers_set
+    # SECURITY FIX: Validate incoming callback payload matches hardcoded arrays natively
+    if callback_data.inv_key not in ODESA_LOCS and callback_data.inv_key not in OUTSIDE_LOCS:
+        await callback.answer("Невідома локація", show_alert=True)
+        return
 
+    service = UserService(db_session, redis_client)
+    await service.toggle_location(callback.fromuser.id, callback_data.inv_key)
+
+    user = await get_or_create_user(db_session, callback.from_user.id)
     await callback.message.edit_reply_markup(
-        reply_markup=build_locations_paginated_keyboard(callback_data.group, updated_triggers, callback_data.page)
+        reply_markup=build_locations_paginated_keyboard(callback_data.group, user.triggers_set, callback_data.page)
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:potvory")
 async def show_threat_categories(callback: CallbackQuery, db_session: AsyncSession):
-    async with db_session.begin():
-        user = await get_or_create_user(db_session, callback.from_user.id)
-        categories = user.potvory
-
+    user = await get_or_create_user(db_session, callback.from_user.id)
     await callback.message.edit_text(
         text="🦅 <b>Налаштування категорій повітряних загроз:</b>",
-        reply_markup=build_threat_categories_keyboard(categories)
+        reply_markup=build_threat_categories_keyboard(user.potvory)
     )
     await callback.answer()
 
@@ -467,25 +693,31 @@ async def show_threat_categories(callback: CallbackQuery, db_session: AsyncSessi
 @router.callback_query(ThreatCategoryCallback.filter())
 async def toggle_threat_category(callback: CallbackQuery, callback_data: ThreatCategoryCallback,
                                  db_session: AsyncSession):
-    async with db_session.begin():
-        service = UserService(db_session, redis_client)
-        user = await get_or_create_user(db_session, callback.from_user.id)
-        categories = list(user.potvory)
+    # SECURITY FIX: Validate input
+    if callback_data.category not in KR_POTVORY:
+        await callback.answer("Помилка: невідома категорія", show_alert=True)
+        return
 
-        if callback_data.category in categories:
-            categories.remove(callback_data.category)
-        else:
-            categories.append(callback_data.category)
+    service = UserService(db_session, redis_client)
+    user = await get_or_create_user(db_session, callback.from_user.id)
+    categories = list(user.potvory)
 
-        msg = await service.set_threat_categories(callback.from_user.id, categories)
+    if callback_data.category in categories:
+        categories.remove(callback_data.category)
+    else:
+        categories.append(callback_data.category)
 
+    msg = await service.set_threat_categories(callback.from_user.id, categories)
     await callback.message.edit_reply_markup(reply_markup=build_threat_categories_keyboard(categories))
     await callback.answer(text=msg)
 
 
 @router.callback_query(F.data == "menu:mute")
 async def show_mute_options(callback: CallbackQuery):
-    await callback.message.edit_text(text="🔕 <b>Режим тиші (MUTE):</b>", reply_markup=build_mute_options_keyboard())
+    await callback.message.edit_text(
+        text="🔕 <b>Режим тиші (MUTE):</b>",
+        reply_markup=build_mute_options_keyboard()
+    )
     await callback.answer()
 
 
@@ -493,30 +725,34 @@ async def show_mute_options(callback: CallbackQuery):
 async def process_mute_action(callback: CallbackQuery, callback_data: MutePresetCallback, db_session: AsyncSession):
     user_id = callback.from_user.id
     now_utc = datetime.now(timezone.utc)
+    service = UserService(db_session, redis_client)
 
-    async with db_session.begin():
-        service = UserService(db_session, redis_client)
-        if callback_data.preset == "clear":
-            msg = await service.apply_mute_timeout(user_id, None, "Звук увімкнено")
-            await redis_client.delete(f"user_mute:{user_id}")
-        else:
-            mapping = {"1": 1, "2": 2, "4": 4}
-            if callback_data.preset in mapping:
-                ttl_seconds = mapping[callback_data.preset] * 3600
-                until = now_utc + timedelta(hours=mapping[callback_data.preset])
-                text_reply = f"Сповіщення вимкнено на {callback_data.preset} год."
-            else:
-                from zoneinfo import ZoneInfo
-                kyiv_now = datetime.now(ZoneInfo(KYIV_TZ))
-                kyiv_target = kyiv_now.replace(hour=7, minute=0, second=0, microsecond=0)
-                if kyiv_now >= kyiv_target:
-                    kyiv_target += timedelta(days=1)
-                until = kyiv_target.astimezone(timezone.utc)
-                ttl_seconds = int((until - now_utc).total_seconds())
-                text_reply = "Сповіщення вимкнено до ранку"
+    if callback_data.preset == "clear":
+        msg = await service.apply_mute_timeout(user_id, None, "Звук увімкнено")
+        await redis_client.delete(f"user_mute:{user_id}")
+    elif callback_data.preset in ("1", "2", "4"):
+        mapping = {"1": 1, "2": 2, "4": 4}
+        ttl_seconds = mapping[callback_data.preset] * 3600
+        until = now_utc + timedelta(hours=mapping[callback_data.preset])
+        text_reply = f"Сповіщення вимкнено на {callback_data.preset} год."
 
-            msg = await service.apply_mute_timeout(user_id, until, text_reply)
-            await redis_client.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
+        msg = await service.apply_mute_timeout(user_id, until, text_reply)
+        await redis_client.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
+    elif callback_data.preset == "morning":
+        from zoneinfo import ZoneInfo
+        kyiv_now = datetime.now(ZoneInfo(KYIV_TZ))
+        kyiv_target = kyiv_now.replace(hour=7, minute=0, second=0, microsecond=0)
+        if kyiv_now >= kyiv_target:
+            kyiv_target += timedelta(days=1)
+        until = kyiv_target.astimezone(timezone.utc)
+        ttl_seconds = int((until - now_utc).total_seconds())
+        text_reply = "Сповіщення вимкнено до ранку"
+
+        msg = await service.apply_mute_timeout(user_id, until, text_reply)
+        await redis_client.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
+    else:
+        await callback.answer("Невідомий пресет", show_alert=True)
+        return
 
     await callback.answer(text=msg)
 
@@ -530,14 +766,14 @@ async def initiate_custom_trigger_prompt(callback: CallbackQuery, state: FSMCont
 
 @router.message(CustomTriggerStates.waiting_for_keyword)
 async def store_custom_user_keyword(message: Message, state: FSMContext, db_session: AsyncSession):
-    cleaned_input = message.text.strip().lower()
+    cleaned_input = TextProcessor.normalize(message.text)
     if len(cleaned_input) < 3 or len(cleaned_input) > 30:
-        await message.reply("⚠️ Назва локації повинна містити від 3 до 30 символів. Спробуйте ще раз:")
+        await message.reply(
+            "⚠️ Назва локації повинна містити від 3 до 30 символів (без спецсимволів). Спробуйте ще раз:")
         return
 
-    async with db_session.begin():
-        service = UserService(db_session, redis_client)
-        success, message_text = await service.add_custom_trigger(message.from_user.id, cleaned_input)
+    service = UserService(db_session, redis_client)
+    success, message_text = await service.add_custom_trigger(message.from_user.id, cleaned_input)
 
     safe_output = html.escape(cleaned_input)
     final_reply = message_text if not success else f"✅ Кастомну локацію <b>«{safe_output}»</b> успішно додано."
@@ -549,12 +785,17 @@ async def store_custom_user_keyword(message: Message, state: FSMContext, db_sess
 @router.callback_query(CustomActionCallback.filter(F.action == "delete"))
 async def delete_custom_user_keyword(callback: CallbackQuery, callback_data: CustomActionCallback,
                                      db_session: AsyncSession):
-    async with db_session.begin():
-        service = UserService(db_session, redis_client)
-        await service.delete_custom_trigger(callback.from_user.id, callback_data.phrase)
-        user = await get_or_create_user(db_session, callback.from_user.id)
-        static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
-        custom_phrases = {t for t in user.triggers_set if t not in static_keys}
+    # SECURITY FIX: Validate phrase exists to prevent NULL deletion
+    if not callback_data.phrase:
+        await callback.answer("Помилка: фразу не знайдено", show_alert=True)
+        return
+
+    service = UserService(db_session, redis_client)
+    await service.delete_custom_trigger(callback.from_user.id, callback_data.phrase)
+
+    user = await get_or_create_user(db_session, callback.from_user.id)
+    static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
+    custom_phrases = {t for t in user.triggers_set if t not in static_keys}
 
     await callback.message.edit_text(
         text="✍️ <b>Ваші кастомні фрази для відстеження:</b>",
@@ -566,12 +807,12 @@ async def delete_custom_user_keyword(callback: CallbackQuery, callback_data: Cus
 @router.callback_query(F.data == "alert:ack")
 async def process_alert_acknowledgement(callback: CallbackQuery, db_session: AsyncSession):
     until = datetime.now(timezone.utc) + timedelta(minutes=10)
-    async with db_session.begin():
-        service = UserService(db_session, redis_client)
-        await service.apply_mute_timeout(callback.from_user.id, until, "Сигнал прийнято")
-        await redis_client.set(f"user_mute:{callback.from_user.id}", "1", ex=600)
+    service = UserService(db_session, redis_client)
+    await service.apply_mute_timeout(callback.from_user.id, until, "Сигнал прийнято")
+    await redis_client.set(f"user_mute:{callback.from_user.id}", "1", ex=600)
 
-    await callback.message.edit_text(text=f"{callback.message.text}\n\n✅ <i>Сигнал прийнято.</i>")
+    # FIX: Use html_text to preserve bold/italic tags and prevent malformed parsing
+    await callback.message.edit_text(text=f"{callback.message.html_text}\n\n✅ <i>Сигнал прийнято.</i>")
     await callback.answer(text="Сповіщення заглушено на 10 хвилин.")
 ```
 
@@ -584,8 +825,8 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.crud import get_or_create_user
 from alert_bot_project.bot.keyboards.builders import build_main_menu
 
@@ -594,23 +835,19 @@ router = Router(name="start_router")
 
 
 @router.message(CommandStart())
-async def process_start_command(message: Message):
-    """Registers user profiles natively with explicit database exception traps."""
+async def process_start_command(message: Message, db_session: AsyncSession):
     user_id = message.from_user.id
 
-    async with AsyncSessionLocal() as session:
-        # Fix: Replaced broad generic exception traps with precise SQLAlchemy constraint boundaries mapping
-        try:
-            async with session.begin():
-                await get_or_create_user(session, user_id)
-        except (SQLAlchemyError, OperationalError) as db_err:
-            logger.error("Database transport failure during user session initialization: %s", db_err)
-            await message.answer("⚠️ Виникла помилка під час реєстрації. Будь ласка, спробуйте пізніше.")
-            return
-        except Exception as unexpected_err:
-            logger.critical("Unexpected framework thread exception inside start handler context: %s", unexpected_err, exc_info=True)
-            await message.answer("⚠️ Критична помилка системи. Спробуйте пізніше.")
-            return
+    try:
+        await get_or_create_user(db_session, user_id)
+    except (SQLAlchemyError, OperationalError) as db_err:
+        logger.error("Database transport failure during user session initialization: %s", db_err)
+        await message.answer("⚠️ Виникла помилка під час реєстрації. Будь ласка, спробуйте пізніше.")
+        return
+    except Exception as unexpected_err:
+        logger.critical("Unexpected framework thread exception inside start handler context: %s", unexpected_err, exc_info=True)
+        await message.answer("⚠️ Критична помилка системи. Спробуйте пізніше.")
+        return
 
     welcome_text = (
         "🛡️ <b>Вітаємо у системі персонального моніторингу загроз!</b>\n\n"
@@ -639,11 +876,10 @@ async def process_info_menu(callback: CallbackQuery):
         "• <b>Принцип дії:</b> Наш автономний модуль перехоплює повідомлення інформаційних пабліків "
         "та аналізує їх на наявність специфічних географічних і тактичних ключових слів.\n\n"
         "• <b>Двомовність:</b> Система автоматично розпізнає назви локацій як українською, "
-        "та ко російською мовами, зводячи їх до єдиного внутрішнього ідентифікатора.\n\n"
+        "так і російською мовами, зводячи їх до єдиного внутрішнього ідентифікатора.\n\n"
         "• <b>Кастомні триггери:</b> Ви можете додати до 5 власних точних назв вулиць, орієнтирів "
         "або селищ. Якщо це слово з'явиться у звітах адмінів — ви миттєво отримаєте попередження."
     )
-    # Fix: Replaced unexported transitive reference lookups with direct native class definition calls
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ Назад", callback_data="menu:main")
@@ -753,13 +989,6 @@ def build_acknowledge_keyboard() -> InlineKeyboardMarkup:
 
 ---
 
-## FILE: alert_bot_project\bot\keyboards\static.py
-```python
-
-```
-
----
-
 ## FILE: alert_bot_project\bot\middlewares\db.py
 ```python
 import logging
@@ -783,10 +1012,11 @@ class DatabaseMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         async with AsyncSessionLocal() as session:
-            # Fix: Open an explicit atomic transaction context for the duration of the request
+            # Открываем транзакцию на всё время обработки апдейта
             async with session.begin():
                 data["db_session"] = session
                 return await handler(event, data)
+            # При выходе из блока транзакция автоматически коммитится (или откатывается при ошибке)
 ```
 
 ---
@@ -799,7 +1029,6 @@ from aiogram.fsm.state import StatesGroup, State
 
 
 class CustomTriggerStates(StatesGroup):
-    """FSM states tracking custom phrase user registration flows."""
     waiting_for_keyword = State()
 
 
@@ -880,65 +1109,58 @@ KYIV_TZ = "Europe/Kyiv"
 DISLOCS_PER_PAGE = 8
 MAX_CUSTOM_TRIGGERS = 5
 
-# Odesa municipal locations mapping with bilingual regex patterns
+# Odesa municipal locations mapping with root stems for suffix matching
 ODESA_LOCS = {
-    "city": {"emoji": "🏙️", "display": "Місто (Загально)", "patterns": ["город", "місто", "одеса", "одесі"]},
+    "city": {"emoji": "🏙️", "display": "Місто (Загально)", "patterns": ["город", "міст", "одеськ", "одес"]},
     "center": {"emoji": "⚡", "display": "Центр", "patterns": ["центр"]},
-    "cheremushki": {"emoji": "🏢", "display": "Черемушки", "patterns": ["черемушки", "черьомушки"]},
+    "cheremushki": {"emoji": "🏢", "display": "Черемушки", "patterns": ["черемушк", "черьомушк"]},
     "port": {"emoji": "⚓", "display": "Порт", "patterns": ["порт"]},
-    "moldovanka": {"emoji": "🚏", "display": "Молдованка", "patterns": ["молдаванка", "молдовка", "молдаванці"]},
-    "bugaevka": {"emoji": "🚂", "display": "Бугаєвка", "patterns": ["бугаевка", "бугаївка", "бугаївці"]},
-    "slobodka": {"emoji": "🏘️", "display": "Слобідка", "patterns": ["слободка", "слобідка", "слобідці"]},
-    "tairovo": {"emoji": "🌆", "display": "Таїрове", "patterns": ["таирово", "таїров"]},
+    "moldovanka": {"emoji": "🚏", "display": "Молдованка", "patterns": ["молдаванк", "молдовк", "молдаванц"]},
+    "bugaevka": {"emoji": "🚂", "display": "Бугаєвка", "patterns": ["бугаевк", "бугаївк", "бугаївц"]},
+    "slobodka": {"emoji": "🏘️", "display": "Слобідка", "patterns": ["слободк", "слобідк", "слобідц"]},
+    "tairovo": {"emoji": "🌆", "display": "Таїрове", "patterns": ["таиров", "таїров"]},
     "sovignon": {"emoji": "🏖️", "display": "Совіньйон", "patterns": ["совиньон", "совіньйон"]},
     "lanzheron": {"emoji": "🌊", "display": "Ланжерон", "patterns": ["ланжерон"]},
-    "kotovskogo": {"emoji": "🏚️", "display": "Селище Котовського", "patterns": ["поселок", "поскот", "котовского", "котовського"]},
-    "yuzhny_dist": {"emoji": "🌞", "display": "Південний район", "patterns": ["южный", "південний"]},
-    "fontanka": {"emoji": "⛲", "display": "Фонтанка", "patterns": ["фонтанка"]},
-    "peresyp": {"emoji": "🌉", "display": "Пересип", "patterns": ["пересыпь", "пересип"]},
-    "arkadia": {"emoji": "🌴", "display": "Аркадія", "patterns": ["аркадия", "аркадія"]},
-    "coast": {"emoji": "🌊", "display": "Узбережжя", "patterns": ["берег", "побережье", "узбережжя"]}
+    "kotovskogo": {"emoji": "🏚️", "display": "Селище Котовського", "patterns": ["поселок", "поскот", "котовск", "котовськ"]},
+    "yuzhny_dist": {"emoji": "🌞", "display": "Південний район", "patterns": ["південн"]}, # Убрали 'южн', чтобы не путать с г. Южне
+    "fontanka": {"emoji": "⛲", "display": "Фонтанка", "patterns": ["фонтанк"]},
+    "peresyp": {"emoji": "🌉", "display": "Пересип", "patterns": ["пересып", "пересип"]},
+    "arkadia": {"emoji": "🌴", "display": "Аркадія", "patterns": ["аркади", "аркаді"]},
+    "coast": {"emoji": "🌊", "display": "Узбережжя", "patterns": ["берег", "побереж", "узбереж"]}
 }
 
-# Regional / Suburb locations mapping with bilingual regex patterns
+# Regional / Suburb locations mapping with root stems
 OUTSIDE_LOCS = {
-    "usatovo": {"emoji": "🌾", "display": "Усатове", "patterns": ["усатово", "усатове"]},
-    "yuzhne": {"emoji": "🌻", "display": "Южне", "patterns": ["южное", "южне", "южного"]},
+    "usatovo": {"emoji": "🌾", "display": "Усатове", "patterns": ["усатов"]},
+    "yuzhne": {"emoji": "🌻", "display": "Южне", "patterns": ["южн"]}, # Оставили 'южн' только здесь
     "belyaevka": {"emoji": "🌾", "display": "Біляївка", "patterns": ["беляевк", "біляївк"]},
-    "ovidiopol": {"emoji": "🌅", "display": "Овідіополь", "patterns": ["овидиополь", "овідіополь"]},
-    "chernomorsk": {"emoji": "⚓", "display": "Чорноморськ", "patterns": ["черноморс", "чорноморськ"]},
-    "chernomorka": {"emoji": "🌊", "display": "Чорноморка", "patterns": ["черноморк", "чорноморка"]},
-    "novi_belyari": {"emoji": "🌳", "display": "Нові Білярі", "patterns": ["новые беляр", "ніві біляр", "нові біляр"]},
-    "reni": {"emoji": "🛳️", "display": "Рені", "patterns": ["рени", "рені"]},
+    "ovidiopol": {"emoji": "🌅", "display": "Овідіополь", "patterns": ["овидиопол", "овідіопол"]},
+    "chernomorsk": {"emoji": "⚓", "display": "Чорноморськ", "patterns": ["черноморс", "чорноморс"]},
+    "chernomorka": {"emoji": "🌊", "display": "Чорноморка", "patterns": ["черноморк", "чорноморк"]},
+    "novi_belyari": {"emoji": "🌳", "display": "Нові Білярі", "patterns": ["новые беляр", "нові біляр", "нові біляр"]},
+    "reni": {"emoji": "🛳️", "display": "Рені", "patterns": ["рен"]},
     "izmail": {"emoji": "🚢", "display": "Ізмаїл", "patterns": ["измаил", "ізмаїл"]},
     "tatarbunary": {"emoji": "🏞️", "display": "Татарбунари", "patterns": ["татарбунар"]},
     "berezovka": {"emoji": "🌳", "display": "Березівка", "patterns": ["березовк", "березівк"]},
-    "vilkovo": {"emoji": "🚤", "display": "Вилкове", "patterns": ["вилково", "вилкове"]},
+    "vilkovo": {"emoji": "🚤", "display": "Вилкове", "patterns": ["вилков"]},
     "avangard": {"emoji": "🎯", "display": "Авангард", "patterns": ["авангард"]},
     "limanka": {"emoji": "🏞️", "display": "Лиманка", "patterns": ["лиманк"]},
     "zatoka": {"emoji": "🏖️", "display": "Затока", "patterns": ["заток"]},
     "belgorod": {"emoji": "🏰", "display": "Білгород-Дністровський", "patterns": ["белгород", "білгород"]},
     "teplodar": {"emoji": "🔥", "display": "Теплодар", "patterns": ["теплодар"]},
     "dobroslav": {"emoji": "🌄", "display": "Доброслав", "patterns": ["доброслав"]},
-    "tuzly": {"emoji": "🌊", "display": "Тузли", "patterns": ["тузлы", "тузли"]}
+    "tuzly": {"emoji": "🌊", "display": "Тузли", "patterns": ["тузл"]}
 }
 
-# Threat classifications mapped to multi-language structural lexical tokens
 KR_POTVORY = {
-    "Мопеди": [
-        "мопед", "дрон", "шахед", "табун", "бпла", "літачок", "атака", "шахід"
-    ],
-    "Ракети": [
-        "ракета", "балумба", "балістика", "балистика", "іскандер", "искандер", "касета", "кассета", "вихід", "выход", "пуск", "х101", "калібр", "калибр"
-    ]
+    "Мопеди": ["мопед", "дрон", "шахед", "табун", "бпла", "літачок", "атака", "шахід"],
+    "Ракети": ["ракета", "балумба", "балістик", "балистик", "іскандер", "искандер", "касет", "кассет", "вихід", "выход", "пуск", "х101", "калібр", "калибр"]
 }
 
-# Notification structural text templates (Clean Ukrainian UI)
 ALERT_FIRST = "🚨 <b>Увага! Загроза у вашому напрямку!</b> Негайно прямуйте до укриття!"
 ALERT_SECOND = "🔔 <b>[2/3] Загроза все ще актуальна!</b> Повідомлення дублюється для вашої безпеки."
 ALERT_THIRD = "🔔 <b>[3/3] Будь ласка, підтвердіть отримання</b> та перебування в безпечному місці!"
 
-# Notification step delay configuration (seconds)
 ALERT_DELAY_1 = 5
 ALERT_DELAY_2 = 60
 ```
@@ -1029,6 +1251,53 @@ def setup_logging(service_name: str):
 
 ---
 
+## FILE: alert_bot_project\core_shared\metrics.py
+```python
+from prometheus_client import start_http_server, Counter, Gauge, Histogram
+import logging
+
+logger = logging.getLogger("core_shared.metrics")
+
+# --- Скрейпер Метрики ---
+SCRAPER_MESSAGES = Counter(
+    "scraper_messages_total",
+    "Total messages intercepted by Pyrogram scraper"
+)
+SCRAPER_ERRORS = Counter(
+    "scraper_errors_total",
+    "Total errors occurred during message interception or Redis publishing"
+)
+
+# --- Воркер Метрики ---
+ALERTS_PROCESSED = Counter(
+    "worker_alerts_processed_total",
+    "Total actionable alerts successfully dispatched to users"
+)
+WORKER_ERRORS = Counter(
+    "worker_errors_total",
+    "Total errors caught inside the main worker execution loop"
+)
+DLQ_SIZE = Gauge(
+    "worker_dlq_size",
+    "Current absolute depth of the Dead Letter Queue in Redis"
+)
+PROCESSING_TIME = Histogram(
+    "worker_processing_duration_seconds",
+    "Time spent analyzing text, querying DB, and generating target user lists",
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+)
+
+def start_metrics_server(port: int):
+    """Initializes the lightweight Prometheus exporter HTTP server."""
+    try:
+        start_http_server(port)
+        logger.info(f"Prometheus metrics exporter successfully started on port {port}")
+    except Exception as e:
+        logger.error(f"Failed to start Prometheus metrics server on port {port}: {e}")
+```
+
+---
+
 ## FILE: alert_bot_project\core_shared\schemas.py
 ```python
 from datetime import datetime, timezone
@@ -1064,15 +1333,14 @@ from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS, KR
 
 CLEAN_PATTERN = re.compile(r"[^\w\s-]")
 
-# Precompile integrated lookup regex strings for multi-language category tracking
+# Изменили \w{0,5} на \w{0,2}. Теперь ложных захватов не будет.
 COMPILED_CATEGORIES = {
-    category: re.compile(rf"(?<![\w])({'|'.join(re.escape(word) for word in keywords)})(?![\w])")
+    category: re.compile(rf"(?<![\w])({'|'.join(re.escape(word) for word in keywords)})\w{{0,2}}(?![\w])")
     for category, keywords in KR_POTVORY.items()
 }
 
-# Precompile and map bilingual text patterns directly to invariant database location keys
 COMPILED_LOCATIONS = {
-    loc_key: re.compile(rf"(?<![\w])({'|'.join(re.escape(p) for p in data['patterns'])})(?![\w])")
+    loc_key: re.compile(rf"(?<![\w])({'|'.join(re.escape(p) for p in data['patterns'])})\w{{0,2}}(?![\w])")
     for loc_key, data in {**ODESA_LOCS, **OUTSIDE_LOCS}.items()
 }
 
@@ -1086,10 +1354,6 @@ class TextProcessor:
 
     @classmethod
     def parse_message(cls, raw_text: str) -> Dict[str, Any]:
-        """
-        Parses incoming text feeds against combined Russian and Ukrainian patterns,
-        returning static invariant tracking keys to downstream services.
-        """
         normalized_text = cls.normalize(raw_text)
         matched_categories: Set[str] = set()
         matched_locations: Set[str] = set()
@@ -1097,12 +1361,10 @@ class TextProcessor:
         if not normalized_text:
             return {"categories": matched_categories, "locations": matched_locations}
 
-        # Scan text against compiled category rules
         for cat_name, pattern in COMPILED_CATEGORIES.items():
             if pattern.search(normalized_text):
                 matched_categories.add(cat_name)
 
-        # Scan text against bilingual location variations mapped to exact invariant keys
         for loc_key, pattern in COMPILED_LOCATIONS.items():
             if pattern.search(normalized_text):
                 matched_locations.add(loc_key)
@@ -1126,14 +1388,13 @@ class TextProcessor:
 ```python
 from datetime import datetime, timezone
 from typing import Sequence, Optional, List, Set
-from sqlalchemy import select, delete, or_, and_
+from sqlalchemy import select, delete, or_, and_, exists
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from alert_bot_project.database.models import UserSettings, UserTrigger
 
 
 async def get_or_create_user(session: AsyncSession, user_id: int) -> UserSettings:
-    """Retrieves user settings or populates default layout entries via atomic Upsert."""
     stmt = select(UserSettings).where(UserSettings.user_id == user_id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
@@ -1154,7 +1415,6 @@ async def get_or_create_user(session: AsyncSession, user_id: int) -> UserSetting
 
 
 async def add_user_trigger(session: AsyncSession, user_id: int, trigger_word: str) -> bool:
-    """Appends explicit keyword search parameter linked to target user identifier mapping."""
     stmt = (
         insert(UserTrigger)
         .values(user_id=user_id, trigger_word=trigger_word)
@@ -1165,7 +1425,6 @@ async def add_user_trigger(session: AsyncSession, user_id: int, trigger_word: st
 
 
 async def remove_user_trigger(session: AsyncSession, user_id: int, trigger_word: str) -> None:
-    """Removes a specific granular custom tracking phrase from database tables."""
     stmt = delete(UserTrigger).where(
         UserTrigger.user_id == user_id,
         UserTrigger.trigger_word == trigger_word
@@ -1174,13 +1433,11 @@ async def remove_user_trigger(session: AsyncSession, user_id: int, trigger_word:
 
 
 async def update_user_potvory(session: AsyncSession, user_id: int, potvory_list: List[str]) -> None:
-    """Updates active categories lists mapping tracking parameters."""
     user = await get_or_create_user(session, user_id)
     user.potvory = potvory_list
 
 
 async def update_user_mute(session: AsyncSession, user_id: int, muted_until: Optional[datetime]) -> None:
-    """Updates user silence duration ceiling threshold limits parameters."""
     user = await get_or_create_user(session, user_id)
     user.muted_until = muted_until
 
@@ -1189,42 +1446,49 @@ async def get_users_by_trigger_and_category(
         session: AsyncSession,
         location_keys: Set[str],
         category_names: Set[str],
-        phrase_candidates: List[str],
+        matched_custom_phrases: List[str],
         all_static_keys: List[str]
 ) -> Sequence[UserSettings]:
-    """Fetches targeted users using fully indexed queries with strict AND intersection filters."""
     now = datetime.now(timezone.utc)
     base_conditions = or_(UserSettings.muted_until == None, UserSettings.muted_until < now)
 
     match_conditions = []
 
-    if phrase_candidates:
+    if matched_custom_phrases:
         match_conditions.append(
-            and_(
-                UserTrigger.trigger_word.in_(phrase_candidates),
-                UserTrigger.trigger_word.not_in(all_static_keys)
+            exists().where(
+                and_(
+                    UserTrigger.user_id == UserSettings.user_id,
+                    UserTrigger.trigger_word.in_(matched_custom_phrases),
+                    UserTrigger.trigger_word.not_in(all_static_keys)
+                )
             )
         )
 
-    if location_keys and category_names:
+    if location_keys:
         match_conditions.append(
-            and_(
-                UserTrigger.trigger_word.in_(list(location_keys)),
-                UserSettings.potvory.overlap(list(category_names))
+            exists().where(
+                and_(
+                    UserTrigger.user_id == UserSettings.user_id,
+                    UserTrigger.trigger_word.in_(list(location_keys))
+                )
             )
+        )
+
+    if category_names:
+        match_conditions.append(
+            UserSettings.potvory.overlap(list(category_names))
         )
 
     if not match_conditions:
         return []
 
-    stmt = (
-        select(UserSettings)
-        .join(UserTrigger, UserTrigger.user_id == UserSettings.user_id)
-        .where(and_(base_conditions, or_(*match_conditions)))
+    stmt = select(UserSettings).where(
+        and_(base_conditions, or_(*match_conditions))
     )
 
     result = await session.execute(stmt)
-    return result.scalars().unique().all()
+    return result.scalars().all()
 ```
 
 ---
@@ -1235,31 +1499,19 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from alert_bot_project.core_shared.config import config
 
-# Production-grade async engine configuration targeting Supabase instance
-# Relies on host-provided system certificates natively or direct standard connection topologies
 engine = create_async_engine(
     config.DATABASE_URL,
-    pool_pre_ping=True,  # Probes standard connectivity status checks before executing calls
-    pool_size=10,        # Default persistent base limits allocation sizes
-    max_overflow=20,     # Spike connection boundaries ceiling limit configurations
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
     echo=False
 )
 
-# Shared factory generating isolated state transaction parameters
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
-    expire_on_commit=False  # Crucial safety parameter handling long-lived asynchronous tasks
+    expire_on_commit=False
 )
-
-
-async def get_db_session() -> AsyncSession:
-    """Asynchronous context lifecycle operational factory iterator dependency inject."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
 ```
 
 ---
@@ -1289,7 +1541,6 @@ MIGRATION_MAP = {
 
 
 async def run_legacy_keys_migration(session: AsyncSession):
-    """Executes atomic batch migration for legacy location keys."""
     async with session.begin():
         stmt_check = select(UserTrigger).where(UserTrigger.trigger_word.in_(list(MIGRATION_MAP.keys())))
         res = await session.execute(stmt_check)
@@ -1301,20 +1552,38 @@ async def run_legacy_keys_migration(session: AsyncSession):
 
         for entry in legacy_entries:
             new_key = MIGRATION_MAP.get(entry.trigger_word)
-            try:
-                # Attempt to update to the new invariant key
-                stmt_update = update(UserTrigger).where(
-                    UserTrigger.user_id == entry.user_id,
-                    UserTrigger.trigger_word == entry.trigger_word
-                ).values(trigger_word=new_key)
-                await session.execute(stmt_update)
-            except IntegrityError:
-                # Key already exists: remove old one
-                await session.execute(delete(UserTrigger).where(
-                    UserTrigger.user_id == entry.user_id,
-                    UserTrigger.trigger_word == entry.trigger_word
-                ))
+
+            # SAVEPOINT: Защищаем основную транзакцию от InternalError(aborted)
+            async with session.begin_nested():
+                try:
+                    stmt_update = update(UserTrigger).where(
+                        UserTrigger.user_id == entry.user_id,
+                        UserTrigger.trigger_word == entry.trigger_word
+                    ).values(trigger_word=new_key)
+                    await session.execute(stmt_update)
+                except IntegrityError:
+                    # Savepoint автоматически откатился. Безопасно удаляем дубль.
+                    await session.execute(delete(UserTrigger).where(
+                        UserTrigger.user_id == entry.user_id,
+                        UserTrigger.trigger_word == entry.trigger_word
+                    ))
+
     logger.info("Migration finalized.")
+
+
+if __name__ == "__main__":
+    import asyncio
+    from alert_bot_project.database.engine import AsyncSessionLocal
+
+
+    async def standalone_bootstrap():
+        print("Starting manual safe database schema keys conversion routine...")
+        async with AsyncSessionLocal() as session:
+            await run_legacy_keys_migration(session)
+        print("Data migration workflow finalized cleanly.")
+
+
+    asyncio.run(standalone_bootstrap())
 ```
 
 ---
@@ -1385,18 +1654,36 @@ class UserSettings(Base):
 
 ---
 
+## FILE: alert_bot_project\prometheus\prometheus.yml
+```yaml
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'odesa_alert_worker'
+    static_configs:
+      - targets: ['worker:8000']
+
+  - job_name: 'odesa_alert_scraper'
+    static_configs:
+      - targets: ['scraper:8001']
+```
+
+---
+
 ## FILE: alert_bot_project\scraper\main.py
 ```python
 import asyncio
 import logging
 import signal
-import sys
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.scraper.publisher import RedisPublisher
+from alert_bot_project.core_shared.metrics import start_metrics_server, SCRAPER_MESSAGES, SCRAPER_ERRORS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1404,7 +1691,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scraper.main")
 
-# Dedicated session storage directory configured for mounting host Docker Volumes
 SESSION_DIR = "/data/session"
 
 app = Client(
@@ -1420,12 +1706,12 @@ shutdown_event = asyncio.Event()
 
 @app.on_message(filters.chat(config.GROUP_ID) & (filters.text | filters.caption))
 async def handle_channel_post(client: Client, message: Message):
-    """Intercepts broadcast events and safely structures them to transient stream pipelines."""
     raw_text = message.text or message.caption
     if not raw_text:
         return
 
     logger.info("Captured raw source payload feed ID: %s", message.id)
+    SCRAPER_MESSAGES.inc()
 
     alert_payload = AlertMessage(
         message_id=message.id,
@@ -1433,25 +1719,22 @@ async def handle_channel_post(client: Client, message: Message):
         raw_text=raw_text
     )
 
-    # Wrap the publication invocation inside defensive boundaries
     try:
         await publisher.publish_message(alert_payload.to_json())
     except Exception as exc:
+        SCRAPER_ERRORS.inc()
         logger.error("Failed downstream message transmission pipeline: %s", exc)
 
 
 async def stop_services():
-    """Handles orchestration shutdown gracefully to protect session persistence mapping layers."""
     logger.info("Initiating graceful teardown protocol stack...")
     try:
         await app.stop()
-        logger.info("Pyrogram listener runtime stopped safely.")
     except Exception as e:
         logger.error("Error destroying engine operational worker: %s", e)
 
     try:
         await publisher.close()
-        logger.info("Redis link destroyed safely.")
     except Exception as e:
         logger.error("Error winding down stream publisher interface: %s", e)
 
@@ -1459,17 +1742,18 @@ async def stop_services():
 
 
 def setup_signal_handlers():
-    """Configures system operational signals intercepts."""
     try:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(stop_services()))
     except NotImplementedError:
-        # Graceful fallback handler support for edge platform execution constraints
         pass
 
 
 async def main():
+    # Стартуем сервер метрик для Prometheus
+    start_metrics_server(8001)
+
     setup_signal_handlers()
     await publisher.connect()
 
@@ -1538,10 +1822,12 @@ class RedisPublisher:
 ```python
 import logging
 from datetime import datetime
-from typing import Optional, List, Set
+from typing import Optional, List
+from sqlalchemy import select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 from alert_bot_project.core_shared.constants import MAX_CUSTOM_TRIGGERS, ODESA_LOCS, OUTSIDE_LOCS
+from alert_bot_project.database.models import UserTrigger
 from alert_bot_project.database.crud import (
     get_or_create_user, add_user_trigger, remove_user_trigger,
     update_user_potvory, update_user_mute
@@ -1551,11 +1837,6 @@ logger = logging.getLogger("services.user_service")
 
 
 class UserService:
-    """
-    Fix: Completely stripped out session control keywords (begin/commit) to conform to the Unit of Work pattern.
-    Transactions are now explicitly owned by calling middleware/handler contexts.
-    """
-
     def __init__(self, db_session: AsyncSession, redis_client: Redis):
         self.session = db_session
         self.redis = redis_client
@@ -1571,18 +1852,16 @@ class UserService:
             return True, "Локацію додано до моніторингу"
 
     async def add_custom_trigger(self, user_id: int, trigger_word: str) -> tuple[bool, str]:
-        """Fix: Counts strictly non-static keywords using unified service layer validation schemas."""
         user = await get_or_create_user(self.session, user_id)
-
         static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
         custom_count = len([t for t in user.triggers_set if t not in static_keys])
 
         if custom_count >= MAX_CUSTOM_TRIGGERS:
-            return False, "🚫 Ви вже досягли ліміту у 5 кастомних локацій. Видаліть старі для додавання нових."
+            return False, "🚫 Ви вже досягли ліміту у 5 кастомних локацій."
 
         success = await add_user_trigger(self.session, user_id, trigger_word)
         if success:
-            await self.redis.sadd("has_custom_triggers", str(user_id))
+            await self.redis.sadd("global_custom_triggers", trigger_word)
             return True, "Локацію додано"
 
         return False, "⚠️ Не вдалося зберегти кастомну локацію."
@@ -1591,11 +1870,12 @@ class UserService:
         await remove_user_trigger(self.session, user_id, trigger_word)
 
         user = await get_or_create_user(self.session, user_id)
-        static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
-        remaining_custom = [t for t in user.triggers_set if t not in static_keys]
+        await self.session.refresh(user, attribute_names=['triggers_rel'])
 
-        if not remaining_custom:
-            await self.redis.srem("has_custom_triggers", str(user_id))
+        stmt = select(exists().where(UserTrigger.trigger_word == trigger_word))
+        res = await self.session.execute(stmt)
+        if not res.scalar():
+            await self.redis.srem("global_custom_triggers", trigger_word)
 
         return True, "Локацію видалено"
 
@@ -1678,7 +1958,6 @@ class Broadcaster:
         return False
 
     def fire_and_forget_message(self, chat_id: int, text: str, reply_markup=None, disable_notification: bool = False):
-        """Fix: Synchronous spawner wrapper creating un-awaited background tasks cleanly without thread blocks."""
         if len(self.background_tasks) >= self.max_bg_tasks:
             logger.error("Local background task pool saturated (%d tasks). Shedding load for user %s",
                          len(self.background_tasks), chat_id)
@@ -1710,6 +1989,10 @@ class Broadcaster:
             logger.error("Failed to write delayed alerts to Redis for user %s: %s", chat_id, e)
 
     def schedule_delayed_alerts(self, chat_id: int, disable_notification: bool):
+        if len(self.background_tasks) >= self.max_bg_tasks:
+            logger.error("Local background task pool saturated. Shedding load for delayed schedule %s", chat_id)
+            return
+
         task = asyncio.create_task(self._execute_scheduling(chat_id, disable_notification))
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
@@ -1766,9 +2049,10 @@ import time
 import json
 import hashlib
 import random
-import itertools
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from sqlalchemy import select
 
 from aiogram import Bot
 from redis.asyncio import Redis
@@ -1779,7 +2063,11 @@ from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
 from alert_bot_project.core_shared.constants import ALERT_FIRST, KYIV_TZ, ODESA_LOCS, OUTSIDE_LOCS
+from alert_bot_project.core_shared.metrics import (
+    start_metrics_server, ALERTS_PROCESSED, PROCESSING_TIME, DLQ_SIZE, WORKER_ERRORS
+)
 from alert_bot_project.database.engine import AsyncSessionLocal
+from alert_bot_project.database.models import UserTrigger
 from alert_bot_project.database.crud import get_users_by_trigger_and_category
 from alert_bot_project.worker.broadcaster import Broadcaster
 from alert_bot_project.bot.keyboards.builders import build_acknowledge_keyboard
@@ -1791,6 +2079,10 @@ LOCAL_TZ = ZoneInfo(KYIV_TZ)
 STREAM_NAME = "alerts_stream"
 GROUP_NAME = "workers_group"
 CONSUMER_NAME = "worker_node_primary"
+
+# Strict boundaries for in-memory O(N) substring match
+_WORD_BOUNDARY = r"(?<![\w])"
+_WORD_BOUNDARY_END = r"(?![\w])"
 
 is_running = True
 
@@ -1804,10 +2096,16 @@ def is_quiet_hours_active() -> bool:
     return now >= start or now <= end
 
 
-def generate_phrase_candidates_generator(words_list: list[str], max_phrase_length: int = 4):
-    for i in range(len(words_list)):
-        for j in range(1, min(max_phrase_length + 1, len(words_list) - i + 1)):
-            yield " ".join(words_list[i:i + j])
+async def sync_global_custom_triggers(redis_client: Redis):
+    all_static = list(ODESA_LOCS.keys()) + list(OUTSIDE_LOCS.keys())
+    async with AsyncSessionLocal() as session:
+        stmt = select(UserTrigger.trigger_word).where(UserTrigger.trigger_word.not_in(all_static)).distinct()
+        res = await session.execute(stmt)
+        triggers = res.scalars().all()
+        if triggers:
+            await redis_client.delete("global_custom_triggers")
+            await redis_client.sadd("global_custom_triggers", *triggers)
+            logger.info("Synchronized %d global custom triggers to memory cache.", len(triggers))
 
 
 async def init_redis_consumer_group(redis_client: Redis):
@@ -1817,28 +2115,20 @@ async def init_redis_consumer_group(redis_client: Redis):
             if any(g['name'] == GROUP_NAME for g in groups):
                 return
         await redis_client.xgroup_create(name=STREAM_NAME, groupname=GROUP_NAME, id="$", mkstream=True)
-        logger.info(f"Persistent Redis Consumer Group established: {GROUP_NAME}")
     except ResponseError as e:
         if "BUSYGROUP" not in str(e):
             raise e
 
 
 async def monitor_dlq_backlog(redis_client: Redis):
-    try:
-        if await redis_client.exists("dead_letter_queue"):
-            startup_depth = await redis_client.xlen("dead_letter_queue")
-            if startup_depth > 0:
-                logger.error("Initial absolute state tracker check: dead_letter_queue holds %s entries.", startup_depth)
-    except Exception as e:
-        logger.error(f"Failed pulling absolute DLQ depth parameters: {e}")
-
     while is_running:
         try:
             if await redis_client.exists("dead_letter_queue"):
                 dlq_depth = await redis_client.xlen("dead_letter_queue")
+                DLQ_SIZE.set(dlq_depth)  # Export metric to Prometheus
+
                 prev_depth_raw = await redis_client.get("dlq:prev_depth")
                 prev_depth = int(prev_depth_raw or 0)
-
                 if dlq_depth != prev_depth:
                     logger.error("DLQ depth transformation detected: %s -> %s entries present.", prev_depth, dlq_depth)
                     await redis_client.set("dlq:prev_depth", str(dlq_depth))
@@ -1861,22 +2151,13 @@ async def auto_claim_pending_tasks(redis_client: Redis, broadcaster: Broadcaster
                     if not raw_json:
                         await redis_client.xack(STREAM_NAME, GROUP_NAME, msg_id)
                         continue
-
-                    try:
-                        alert_data = AlertMessage.from_json(raw_json)
-                        dedup_key = f"processed_msg:{alert_data.message_id}"
-                        if await redis_client.get(dedup_key):
-                            await redis_client.xack(STREAM_NAME, GROUP_NAME, msg_id)
-                            continue
-                    except Exception:
-                        pass
-
                     await process_single_stream_payload(msg_id, raw_json, redis_client, broadcaster)
         except Exception as e:
             logger.error("Exception occurred inside PEL XAUTOCLAIM tracking loop: %s", e)
 
 
-async def process_single_stream_payload(redis_msg_id: str, raw_json: str, redis_client: Redis, broadcaster: Broadcaster):
+async def process_single_stream_payload(redis_msg_id: str, raw_json: str, redis_client: Redis,
+                                        broadcaster: Broadcaster):
     try:
         alert_data = AlertMessage.from_json(raw_json)
     except Exception as err:
@@ -1889,94 +2170,108 @@ async def process_single_stream_payload(redis_msg_id: str, raw_json: str, redis_
         return
 
     dedup_key = f"processed_msg:{alert_data.message_id}"
-    analysis = TextProcessor.parse_message(alert_data.raw_text)
-    normalized_text = TextProcessor.normalize(alert_data.raw_text)
 
-    # Fix: Corrected conditional check to evaluate global custom trigger presence cleanly per-user scale context paths
-    has_custom_triggers = await redis_client.exists("has_custom_triggers") > 0
-
-    if not analysis["categories"] and not analysis["locations"] and not has_custom_triggers:
+    # Early validation to skip already fully processed tasks
+    if await redis_client.exists(dedup_key):
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return
 
-    phrase_candidates = []
-    if has_custom_triggers:
-        words = normalized_text.split()
-        phrase_candidates = list(itertools.islice(generate_phrase_candidates_generator(words, max_phrase_length=4), 100))
+    # Measure actual DB/Cache resolution time via Context Manager
+    with PROCESSING_TIME.time():
+        analysis = TextProcessor.parse_message(alert_data.raw_text)
+        normalized_text = TextProcessor.normalize(alert_data.raw_text)
 
-    sorted_locs = sorted(list(analysis["locations"]))
-    sorted_cats = sorted(list(analysis["categories"]))
+        global_custom = await redis_client.smembers("global_custom_triggers")
+        matched_custom = [
+            t for t in global_custom
+            if re.search(rf"{_WORD_BOUNDARY}{re.escape(t)}{_WORD_BOUNDARY_END}", normalized_text)
+        ]
 
-    hash_payload = f"locs:{sorted_locs}|cats:{sorted_cats}"
-    checksum = hashlib.md5(hash_payload.encode("utf-8")).hexdigest()
+        if not analysis["categories"] and not analysis["locations"] and not matched_custom:
+            is_fresh_lock = await redis_client.set(dedup_key, "1", nx=True, ex=300)
+            if is_fresh_lock:
+                await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+            return
 
-    cache_version = await redis_client.get("cache:generation_version") or "0"
-    cache_hash_key = f"cache:alert_targets_v{cache_version}:{checksum}"
+        sorted_locs = sorted(list(analysis["locations"]))
+        sorted_cats = sorted(list(analysis["categories"]))
+        sorted_custom = sorted(matched_custom)
 
-    cached_targets = await redis_client.get(cache_hash_key)
+        hash_payload = f"locs:{sorted_locs}|cats:{sorted_cats}|custom:{sorted_custom}"
+        checksum = hashlib.md5(hash_payload.encode("utf-8")).hexdigest()
 
-    if cached_targets:
-        user_ids_list = json.loads(cached_targets)
-    else:
-        all_static_keys = list(ODESA_LOCS.keys()) + list(OUTSIDE_LOCS.keys())
-        async with AsyncSessionLocal() as session:
-            try:
-                target_users = await get_users_by_trigger_and_category(
-                    session=session, location_keys=analysis["locations"],
-                    category_names=analysis["categories"], phrase_candidates=phrase_candidates,
-                    all_static_keys=all_static_keys
-                )
-                user_ids_list = [u.user_id for u in target_users]
+        cache_hash_key = f"cache:alert_targets:{checksum}"
+        cached_targets = await redis_client.get(cache_hash_key)
 
-                if not user_ids_list:
-                    await redis_client.setex(cache_hash_key, 30, json.dumps([]))
-                else:
-                    await redis_client.setex(cache_hash_key, 30, json.dumps(user_ids_list))
-            except Exception as db_err:
-                retry_key = f"retry_count:{redis_msg_id}"
-                current_retries = await redis_client.incr(retry_key)
-                await redis_client.expire(retry_key, 3600)
+        if cached_targets:
+            user_ids_list = json.loads(cached_targets)
+        else:
+            all_static_keys = list(ODESA_LOCS.keys()) + list(OUTSIDE_LOCS.keys())
+            async with AsyncSessionLocal() as session:
+                try:
+                    target_users = await get_users_by_trigger_and_category(
+                        session=session, location_keys=analysis["locations"],
+                        category_names=analysis["categories"], matched_custom_phrases=matched_custom,
+                        all_static_keys=all_static_keys
+                    )
+                    user_ids_list = [u.user_id for u in target_users]
 
-                if current_retries > 5:
-                    logger.error("Task message ID %s dropped after exceeding retry limit. Relocating to DLQ.", redis_msg_id)
-                    await redis_client.xadd("dead_letter_queue", {"payload": raw_json, "error": str(db_err)}, maxlen=10000)
-                    await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-                    await redis_client.delete(retry_key)
-                else:
-                    logger.warning("Database transient exception recorded on iteration %s/5. Leaving task inside PEL loop.", current_retries)
-                return
+                    # 5-second TTL prevents long MUTE synchronization desyncs
+                    if not user_ids_list:
+                        await redis_client.setex(cache_hash_key, 5, json.dumps([]))
+                    else:
+                        await redis_client.setex(cache_hash_key, 5, json.dumps(user_ids_list))
+                except Exception as db_err:
+                    retry_key = f"retry_count:{redis_msg_id}"
+                    current_retries = await redis_client.incr(retry_key)
+                    await redis_client.expire(retry_key, 3600)
+
+                    if current_retries > 5:
+                        logger.error("Task message ID %s dropped after exceeding retry limit.", redis_msg_id)
+                        await redis_client.xadd("dead_letter_queue", {"payload": raw_json, "error": str(db_err)},
+                                                maxlen=10000)
+                        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+                        await redis_client.delete(retry_key)
+                    else:
+                        logger.warning("Database transient exception on iteration %s/5.", current_retries)
+                    return
 
     if not user_ids_list:
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        is_fresh_lock = await redis_client.set(dedup_key, "1", nx=True, ex=300)
+        if is_fresh_lock:
+            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return
 
-    is_fresh_lock = await redis_client.set(dedup_key, "1", nx=True, ex=300)
-    if not is_fresh_lock:
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-        return
-
-    logger.info("Fresh broadcast alert payload verified. Forwarding dispatch streams downpipes safely.")
     quiet_mode = is_quiet_hours_active()
     alert_markup = build_acknowledge_keyboard()
     display_text = f"{ALERT_FIRST}\n\n🌙 <i>[Сповіщення надіслано у тихому режимі нічного часу]</i>" if quiet_mode else ALERT_FIRST
 
-    # Fix: Resolved fatal coroutine leak by calling synchronous fire_and_forget_message cleanly without unawaited tokens
+    # Non-blocking Broadcast Task Execution
     for u_id in user_ids_list:
-        broadcaster.fire_and_forget_message(u_id, display_text, reply_markup=alert_markup, disable_notification=quiet_mode)
+        broadcaster.fire_and_forget_message(u_id, display_text, reply_markup=alert_markup,
+                                            disable_notification=quiet_mode)
         broadcaster.schedule_delayed_alerts(u_id, disable_notification=quiet_mode)
 
-    await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-    await redis_client.delete(f"retry_count:{redis_msg_id}")
+    # LATE LOCK: Ensure At-Least-Once delivery. Lock only AFTER dispatch loop executes.
+    is_fresh_lock = await redis_client.set(dedup_key, "1", nx=True, ex=300)
+    if is_fresh_lock:
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        await redis_client.delete(f"retry_count:{redis_msg_id}")
+        ALERTS_PROCESSED.inc()
 
 
 async def main():
     global is_running
     logger.info("Production background alert stream analysis subsystem initialization...")
 
+    start_metrics_server(8000)
+
     bot = Bot(token=config.BOT_TOKEN)
     redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
 
     await init_redis_consumer_group(redis_client)
+    await sync_global_custom_triggers(redis_client)
+
     broadcaster = Broadcaster(bot, redis_client)
 
     delayed_daemon = asyncio.create_task(broadcaster.process_delayed_alerts())
@@ -1992,10 +2287,11 @@ async def main():
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, shutdown_handler)
     except NotImplementedError:
-        logger.warning("System platform environment restricts native direct POSIX signal handlers assignments.")
+        pass
 
     logger.info("Clearing outstanding internal consumer PEL backlogs...")
-    backlog_data = await redis_client.xreadgroup(groupname=GROUP_NAME, consumername=CONSUMER_NAME, streams={STREAM_NAME: "0"}, count=100, block=10)
+    backlog_data = await redis_client.xreadgroup(groupname=GROUP_NAME, consumername=CONSUMER_NAME,
+                                                 streams={STREAM_NAME: "0"}, count=100, block=10)
     if backlog_data:
         for stream, messages in backlog_data:
             for redis_msg_id, payload in messages:
@@ -2006,7 +2302,8 @@ async def main():
     logger.info("Worker processing loop listening for target stream pipelines...")
     while is_running:
         try:
-            streams_data = await redis_client.xreadgroup(groupname=GROUP_NAME, consumername=CONSUMER_NAME, streams={STREAM_NAME: ">"}, count=1, block=1000)
+            streams_data = await redis_client.xreadgroup(groupname=GROUP_NAME, consumername=CONSUMER_NAME,
+                                                         streams={STREAM_NAME: ">"}, count=1, block=1000)
             if not streams_data:
                 continue
             for stream, messages in streams_data:
@@ -2017,25 +2314,27 @@ async def main():
                     else:
                         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         except Exception as e:
+            WORKER_ERRORS.inc()
             logger.error("Core engine execution loop error: %s", e, exc_info=True)
             await asyncio.sleep(2)
 
+    # Graceful Teardown
     delayed_daemon.cancel()
     recovery_daemon.cancel()
     dlq_daemon.cancel()
+
+    # CRITICAL: Await all in-flight outbound Telegram broadcasts before killing connections
+    if broadcaster.background_tasks:
+        logger.info("Graceful drain: Waiting for %d in-flight broadcast tasks to complete...",
+                    len(broadcaster.background_tasks))
+        await asyncio.gather(*broadcaster.background_tasks, return_exceptions=True)
+
     await redis_client.close()
     await bot.session.close()
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-```
-
----
-
-## FILE: alert_bot_project\worker\matcher.py
-```python
-
 ```
 
 ---

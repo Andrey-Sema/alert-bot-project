@@ -19,7 +19,8 @@ class DatabaseMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         async with AsyncSessionLocal() as session:
-            # Fix: Open an explicit atomic transaction context for the duration of the request
+            # Открываем транзакцию на всё время обработки апдейта
             async with session.begin():
                 data["db_session"] = session
                 return await handler(event, data)
+            # При выходе из блока транзакция автоматически коммитится (или откатывается при ошибке)

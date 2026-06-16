@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import signal
-import sys
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.scraper.publisher import RedisPublisher
+from alert_bot_project.core_shared.metrics import start_metrics_server, SCRAPER_MESSAGES, SCRAPER_ERRORS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,7 +15,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scraper.main")
 
-# Dedicated session storage directory configured for mounting host Docker Volumes
 SESSION_DIR = "/data/session"
 
 app = Client(
@@ -31,12 +30,12 @@ shutdown_event = asyncio.Event()
 
 @app.on_message(filters.chat(config.GROUP_ID) & (filters.text | filters.caption))
 async def handle_channel_post(client: Client, message: Message):
-    """Intercepts broadcast events and safely structures them to transient stream pipelines."""
     raw_text = message.text or message.caption
     if not raw_text:
         return
 
     logger.info("Captured raw source payload feed ID: %s", message.id)
+    SCRAPER_MESSAGES.inc()
 
     alert_payload = AlertMessage(
         message_id=message.id,
@@ -44,25 +43,22 @@ async def handle_channel_post(client: Client, message: Message):
         raw_text=raw_text
     )
 
-    # Wrap the publication invocation inside defensive boundaries
     try:
         await publisher.publish_message(alert_payload.to_json())
     except Exception as exc:
+        SCRAPER_ERRORS.inc()
         logger.error("Failed downstream message transmission pipeline: %s", exc)
 
 
 async def stop_services():
-    """Handles orchestration shutdown gracefully to protect session persistence mapping layers."""
     logger.info("Initiating graceful teardown protocol stack...")
     try:
         await app.stop()
-        logger.info("Pyrogram listener runtime stopped safely.")
     except Exception as e:
         logger.error("Error destroying engine operational worker: %s", e)
 
     try:
         await publisher.close()
-        logger.info("Redis link destroyed safely.")
     except Exception as e:
         logger.error("Error winding down stream publisher interface: %s", e)
 
@@ -70,17 +66,18 @@ async def stop_services():
 
 
 def setup_signal_handlers():
-    """Configures system operational signals intercepts."""
     try:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(stop_services()))
     except NotImplementedError:
-        # Graceful fallback handler support for edge platform execution constraints
         pass
 
 
 async def main():
+    # Стартуем сервер метрик для Prometheus
+    start_metrics_server(8001)
+
     setup_signal_handlers()
     await publisher.connect()
 

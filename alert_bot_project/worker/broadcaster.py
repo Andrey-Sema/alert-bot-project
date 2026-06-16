@@ -57,7 +57,6 @@ class Broadcaster:
         return False
 
     def fire_and_forget_message(self, chat_id: int, text: str, reply_markup=None, disable_notification: bool = False):
-        """Fix: Synchronous spawner wrapper creating un-awaited background tasks cleanly without thread blocks."""
         if len(self.background_tasks) >= self.max_bg_tasks:
             logger.error("Local background task pool saturated (%d tasks). Shedding load for user %s",
                          len(self.background_tasks), chat_id)
@@ -89,6 +88,10 @@ class Broadcaster:
             logger.error("Failed to write delayed alerts to Redis for user %s: %s", chat_id, e)
 
     def schedule_delayed_alerts(self, chat_id: int, disable_notification: bool):
+        if len(self.background_tasks) >= self.max_bg_tasks:
+            logger.error("Local background task pool saturated. Shedding load for delayed schedule %s", chat_id)
+            return
+
         task = asyncio.create_task(self._execute_scheduling(chat_id, disable_notification))
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
