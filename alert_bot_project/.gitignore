@@ -72,6 +72,11 @@ logs/
 .vscode/
 *.code-workspace
 .history/
+# JetBrains root config leaks
+misc.xml
+modules.xml
+vcs.xml
+inspectionProfiles/
 
 # ============================================================
 #  Тестирование, Линтеры и Статический Анализ
