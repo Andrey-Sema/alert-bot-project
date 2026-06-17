@@ -596,10 +596,6 @@ alert-bot-project/
 
 ---
 
-## 📄 Ліцензія
-
-Проєкт поширюється під ліцензією [MIT](LICENSE).
-
 ---
 
 <div align="center">
