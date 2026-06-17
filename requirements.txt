@@ -1,0 +1,9 @@
+aiogram==3.29.0
+pydantic==2.13.4
+pydantic-settings==2.14.1
+SQLAlchemy==2.0.51
+asyncpg==0.31.0
+redis==5.2.1
+pyrogram==2.0.106
+prometheus-client==0.25.0
+# tgCrypto==1.2.5

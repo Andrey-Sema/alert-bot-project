@@ -1,0 +1,34 @@
+global:
+  # Частота сбора метрик с запущенных контейнеров
+  scrape_interval: 5s
+  # Как часто Прометей проверяет правила алертинга на основе собранных данных
+  evaluation_interval: 5s
+
+# Загрузка внешнего файла с правилами алертов (тот самый, где живет RedisDown)
+rule_files:
+  - '/etc/prometheus/alerts.yml'
+
+# Настройка маршрутизации алертов в Alertmanager для отправки в Telegram
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: 'odesa_alert_worker'
+    static_configs:
+      - targets: ['worker:8000']
+
+  - job_name: 'odesa_alert_scraper'
+    static_configs:
+      - targets: ['scraper:8001']
+
+  - job_name: 'odesa_alert_bot'
+    static_configs:
+      - targets: ['bot_ui:8002']
+
+  # ✅ ФИКС: Добавлен источник данных для мониторинга брокера сообщений.
+  # Теперь Прометей видит метрику redis_up и контролирует стабильность Redis Streams.
+  - job_name: 'redis_exporter'
+    static_configs:
+      - targets: ['redis-exporter:9121']

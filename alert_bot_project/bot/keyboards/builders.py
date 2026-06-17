@@ -6,14 +6,32 @@ from alert_bot_project.core_shared.callbacks import (
     MutePresetCallback, CustomActionCallback
 )
 
+# ✅ ФИКС: Централизованные константы путей навигации (избавляемся от магических строк)
+MENU_MAIN = "menu:main"
+MENU_CHOOSE_GROUP = "menu:choose_group"
+MENU_CUSTOM_MANAGE = "menu:custom_manage"
+MENU_POTVORY = "menu:potvory"
+MENU_MUTE = "menu:mute"
+MENU_INFO = "menu:info"
+CUSTOM_ADD = "custom:add"
+ALERT_ACK = "alert:ack"
+
+
+# ✅ КРИТИЧЕСКИЙ ФИКС: Функция спасена из вложенного скоупа и поднята на уровень модуля
+def build_back_to_main_keyboard() -> InlineKeyboardMarkup:
+    """Генерує уніфіковану кнопку повернення до головного меню."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data=MENU_MAIN)
+    return kb.as_markup()
+
 
 def build_main_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🌍 Обрати дислокацію", callback_data="menu:choose_group")
-    kb.button(text="✍️ Мої кастомні фрази", callback_data="menu:custom_manage")
-    kb.button(text="🦅 Крилаті потвори", callback_data="menu:potvory")
-    kb.button(text="🔕 Режим тиші (MUTE)", callback_data="menu:mute")
-    kb.button(text="ℹ️ Інформація", callback_data="menu:info")
+    kb.button(text="🌍 Обрати дислокацію", callback_data=MENU_CHOOSE_GROUP)
+    kb.button(text="✍️ Мої кастомні фрази", callback_data=MENU_CUSTOM_MANAGE)
+    kb.button(text="🦅 Крилаті потвори", callback_data=MENU_POTVORY)
+    kb.button(text="🔕 Режим тиші (MUTE)", callback_data=MENU_MUTE)
+    kb.button(text="ℹ️ Інформація", callback_data=MENU_INFO)
     kb.adjust(1)
     return kb.as_markup()
 
@@ -22,7 +40,7 @@ def build_group_selection_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🏙️ Одеса (Райони)", callback_data=GroupNavCallback(group="odesa", page=0).pack())
     kb.button(text="🏞️ Передмістя / Область", callback_data=GroupNavCallback(group="outside", page=0).pack())
-    kb.button(text="⬅️ Назад", callback_data="menu:main")
+    kb.button(text="⬅️ Назад", callback_data=MENU_MAIN)
     kb.adjust(1)
     return kb.as_markup()
 
@@ -31,6 +49,12 @@ def build_locations_paginated_keyboard(group: str, active_user_triggers: set[str
     source_map = ODESA_LOCS if group == "odesa" else OUTSIDE_LOCS
     items = list(source_map.items())
     total_items = len(items)
+
+    max_page = max(0, (total_items - 1) // DISLOCS_PER_PAGE)
+    if page < 0:
+        page = 0
+    elif page > max_page:
+        page = max_page
 
     start_index = page * DISLOCS_PER_PAGE
     end_index = min(start_index + DISLOCS_PER_PAGE, total_items)
@@ -48,8 +72,9 @@ def build_locations_paginated_keyboard(group: str, active_user_triggers: set[str
     if end_index < total_items:
         kb.button(text="Наступні ➡️", callback_data=GroupNavCallback(group=group, page=page + 1).pack())
 
-    kb.button(text="➕ Додати власну локацію", callback_data="custom:add")
-    kb.button(text="⬅️ Назад до груп", callback_data="menu:choose_group")
+    # ✅ СТЫКОВКА: Использование констант вместо хардкода сырых строк
+    kb.button(text="➕ Додати власну локацію", callback_data=CUSTOM_ADD)
+    kb.button(text="⬅️ Назад до груп", callback_data=MENU_CHOOSE_GROUP)
     kb.adjust(2)
     return kb.as_markup()
 
@@ -58,8 +83,8 @@ def build_custom_triggers_management_keyboard(custom_phrases: set[str]) -> Inlin
     kb = InlineKeyboardBuilder()
     for phrase in custom_phrases:
         kb.button(text=f"❌ {phrase}", callback_data=CustomActionCallback(action="delete", phrase=phrase).pack())
-    kb.button(text="➕ Додати нову фразу", callback_data="custom:add")
-    kb.button(text="⬅️ Головне меню", callback_data="menu:main")
+    kb.button(text="➕ Додати нову фразу", callback_data=CUSTOM_ADD)
+    kb.button(text="⬅️ Головне меню", callback_data=MENU_MAIN)
     kb.adjust(1)
     return kb.as_markup()
 
@@ -70,7 +95,7 @@ def build_threat_categories_keyboard(active_categories: list[str]) -> InlineKeyb
         is_enabled = cat_name in active_categories
         status_marker = "✅" if is_enabled else "❌"
         kb.button(text=f"{status_marker} {cat_name}", callback_data=ThreatCategoryCallback(category=cat_name).pack())
-    kb.button(text="⬅️ Назад", callback_data="menu:main")
+    kb.button(text="⬅️ Назад", callback_data=MENU_MAIN)
     kb.adjust(1)
     return kb.as_markup()
 
@@ -82,12 +107,12 @@ def build_mute_options_keyboard() -> InlineKeyboardMarkup:
     kb.button(text="🔕 4 години", callback_data=MutePresetCallback(preset="4").pack())
     kb.button(text="😴 До ранку (07:00)", callback_data=MutePresetCallback(preset="morning").pack())
     kb.button(text="🔔 Увімкнути звук", callback_data=MutePresetCallback(preset="clear").pack())
-    kb.button(text="⬅️ Назад", callback_data="menu:main")
+    kb.button(text="⬅️ Назад", callback_data=MENU_MAIN)
     kb.adjust(2)
     return kb.as_markup()
 
 
 def build_acknowledge_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Сповіщення прийнято", callback_data="alert:ack")
+    kb.button(text="✅ Сповіщення прийнято", callback_data=ALERT_ACK)
     return kb.as_markup()

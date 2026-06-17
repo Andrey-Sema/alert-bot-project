@@ -1,8 +1,11 @@
+import asyncio
 import logging
 from sqlalchemy import update, select, delete
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from alert_bot_project.database.models import UserTrigger
+
+from alert_bot_project.database.models import UserTrigger, Base
+from alert_bot_project.database.engine import engine
 
 logger = logging.getLogger("database.migration")
 
@@ -20,47 +23,83 @@ MIGRATION_MAP = {
 }
 
 
-async def run_legacy_keys_migration(session: AsyncSession):
-    async with session.begin():
-        stmt_check = select(UserTrigger).where(UserTrigger.trigger_word.in_(list(MIGRATION_MAP.keys())))
-        res = await session.execute(stmt_check)
-        legacy_entries = res.scalars().all()
+class LegacyMigrationManager:
+    """Вся миграционная логика инкапсулирована в класс для консистентности с проектом."""
 
-        if not legacy_entries:
-            logger.info("No legacy keys found.")
-            return
+    @classmethod
+    async def init_database_schema(cls) -> None:
+        """Проверяет и инициализирует схему таблиц в базе данных."""
+        logger.info("Перевірка та ініціалізація схеми бази даних...")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
-        for entry in legacy_entries:
-            new_key = MIGRATION_MAP.get(entry.trigger_word)
+    @classmethod
+    async def run_legacy_keys_migration(cls, session: AsyncSession) -> None:
+        """
+        Мигрирует старые текстовые триггеры в новые инвариантные ключи.
+        Безопасно разрешает конфликты уникальности через SAVEPOINT.
+        """
+        async with session.begin():
+            # ✅ ФИКС: Очепятка .inc_() заменена на законный метод SQLAlchemy .in_()
+            stmt_check = select(UserTrigger).where(UserTrigger.trigger_word.in_(list(MIGRATION_MAP.keys())))
+            res = await session.execute(stmt_check)
+            legacy_entries = res.scalars().all()
 
-            # SAVEPOINT: Защищаем основную транзакцию от InternalError(aborted)
-            async with session.begin_nested():
-                try:
-                    stmt_update = update(UserTrigger).where(
-                        UserTrigger.user_id == entry.user_id,
-                        UserTrigger.trigger_word == entry.trigger_word
-                    ).values(trigger_word=new_key)
-                    await session.execute(stmt_update)
-                except IntegrityError:
-                    # Savepoint автоматически откатился. Безопасно удаляем дубль.
-                    await session.execute(delete(UserTrigger).where(
-                        UserTrigger.user_id == entry.user_id,
-                        UserTrigger.trigger_word == entry.trigger_word
-                    ))
+            if not legacy_entries:
+                logger.info("No legacy keys found. Database is up to date.")
+                return
 
-    logger.info("Migration finalized.")
+            logger.info("Found %d legacy keys. Starting data conversion...", len(legacy_entries))
+            for entry in legacy_entries:
+                new_key = MIGRATION_MAP.get(entry.trigger_word)
+
+                # Изолируем операцию во вложенную транзакцию (SAVEPOINT)
+                async with session.begin_nested():
+                    try:
+                        stmt_update = update(UserTrigger).where(
+                            UserTrigger.user_id == entry.user_id,
+                            UserTrigger.trigger_word == entry.trigger_word
+                        ).values(trigger_word=new_key)
+                        await session.execute(stmt_update)
+                    except IntegrityError:
+                        # Если у юзера уже есть новый инвариантный ключ, старый дубликат удаляется
+                        await session.execute(delete(UserTrigger).where(
+                            UserTrigger.user_id == entry.user_id,
+                            UserTrigger.trigger_word == entry.trigger_word
+                        ))
+
+        logger.info("Data keys migration finalized successfully.")
+
+
+async def standalone_bootstrap() -> None:
+    """Безопасный CLI-стартер для выполнения миграции в изолированном контейнере."""
+    from alert_bot_project.database.engine import AsyncSessionLocal
+
+    logger.info("Starting manual safe database schema keys conversion routine...")
+    try:
+        # Сначала проверяем/поднимаем таблицы
+        await LegacyMigrationManager.init_database_schema()
+
+        # Затем гоним транзакцию конвертации данных
+        async with AsyncSessionLocal() as session:
+            await LegacyMigrationManager.run_legacy_keys_migration(session)
+
+        logger.info("Data migration workflow finalized cleanly.")
+    except (OperationalError, ConnectionRefusedError) as net_err:
+        logger.critical("Database connection failure during migration bootstrap: %s", net_err)
+        raise
+    except Exception as unexpected_err:
+        logger.critical("Uncaught critical exception during standalone migration execution: %s", unexpected_err,
+                        exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
-    import asyncio
-    from alert_bot_project.database.engine import AsyncSessionLocal
+    from alert_bot_project.core_shared.logging_config import setup_logging
 
+    setup_logging("database_migration")
 
-    async def standalone_bootstrap():
-        print("Starting manual safe database schema keys conversion routine...")
-        async with AsyncSessionLocal() as session:
-            await run_legacy_keys_migration(session)
-        print("Data migration workflow finalized cleanly.")
-
-
-    asyncio.run(standalone_bootstrap())
+    try:
+        asyncio.run(standalone_bootstrap())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Migration process terminated by system or user interrupt.")

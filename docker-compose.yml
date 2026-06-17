@@ -1,0 +1,203 @@
+version: '3.8'
+
+# ✅ ЯКОРЬ: Декларация общих параметров для минимизации дублирования (DRY)
+x-common-service: &common-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  restart: unless-stopped
+  networks:
+    - alert_network
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+
+  # =========================================================================
+  # ИНФРАСТРУКТУРНЫЙ СЛОЙ (БРОКЕР И СУБД МЕДЖЕРЫ)
+  # =========================================================================
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: odesa_alert_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    # ✅ ФИКС: Встроенный хелсчек, гарантирующий реальную готовность памяти брокера
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - alert_network
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: odesa_alert_redis_exporter
+    restart: unless-stopped
+    environment:
+      - REDIS_ADDR=redis:6379
+    # Начинаем скрейпить метрики только тогда, когда сам Редис ответил на PING
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - alert_network
+
+  # Слой миграции данных (база Супабейса внешняя, но таблицы апдейтим локально)
+  migrator:
+    <<: *common-service
+    container_name: odesa_alert_migrator
+    command: python -m alert_bot_project.database.migration
+    restart: on-failure
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 5
+    # ✅ СИНХРОНИЗАЦИЯ: Мигратор ждет, пока поднимется транспортная шина
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # =========================================================================
+  # СЛОЙ БИЗНЕС-ЛОГИКИ ПРИЛОЖЕНИЯ (PYTHON / ASYNCIO)
+  # =========================================================================
+
+  scraper:
+    <<: *common-service
+    container_name: odesa_alert_scraper
+    command: python -m alert_bot_project.scraper.main
+    volumes:
+      - ./data/session:/data/session
+      - shared_logs:/data/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+    # Запуск только после успешного завершения миграции схемы и прогрева Редиса
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *common-service
+    container_name: odesa_alert_worker
+    command: python -m alert_bot_project.worker.main
+    volumes:
+      - shared_logs:/data/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+
+  bot_ui:
+    <<: *common-service
+    container_name: odesa_alert_bot_ui
+    command: python -m alert_bot_project.bot.main
+    volumes:
+      - shared_logs:/data/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8002/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+
+  # =========================================================================
+  # СЛОЙ МОНИТОРИНГА И НАБЛЮДАЕМОСТИ (OBSERVABILITY STACK)
+  # =========================================================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: odesa_alert_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "127.0.0.1:9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      bot_ui:
+        condition: service_healthy
+      redis-exporter:
+        condition: service_started
+    networks:
+      - alert_network
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: odesa_alert_alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+    ports:
+      - "127.0.0.1:9093:9093"
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
+    networks:
+      - alert_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: odesa_alert_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is strictly required in .env}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    # Графана стартует только тогда, когда Прометей полностью готов отдавать данные
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - alert_network
+
+volumes:
+  redis_data:
+    driver: local
+  shared_logs:
+    driver: local
+
+networks:
+  alert_network:
+    driver: bridge

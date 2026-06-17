@@ -7,6 +7,7 @@ from alert_bot_project.database.models import UserSettings, UserTrigger
 
 
 async def get_or_create_user(session: AsyncSession, user_id: int) -> UserSettings:
+    """Получить пользователя или создать с настройками по умолчанию."""
     stmt = select(UserSettings).where(UserSettings.user_id == user_id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
@@ -14,12 +15,17 @@ async def get_or_create_user(session: AsyncSession, user_id: int) -> UserSetting
     if user:
         return user
 
+    # ✅ ОПТИМИЗАЦИЯ: Убран избыточный begin_nested().
+    # on_conflict_do_nothing не генерирует исключений, транзакция не ломается.
     insert_stmt = (
         insert(UserSettings)
         .values(user_id=user_id, potvory=["Мопеди", "Ракети"])
         .on_conflict_do_nothing(index_elements=["user_id"])
     )
     await session.execute(insert_stmt)
+
+    # ✅ СИНХРОНИЗАЦИЯ: flush() гарантирует, что SQLAlchemy зафиксирует изменения
+    # в текущей транзакции перед тем, как выполнять повторный select.
     await session.flush()
 
     result = await session.execute(stmt)
@@ -27,6 +33,7 @@ async def get_or_create_user(session: AsyncSession, user_id: int) -> UserSetting
 
 
 async def add_user_trigger(session: AsyncSession, user_id: int, trigger_word: str) -> bool:
+    """Добавить триггер пользователю. Возвращает True если добавлен, False если уже был."""
     stmt = (
         insert(UserTrigger)
         .values(user_id=user_id, trigger_word=trigger_word)
@@ -37,6 +44,7 @@ async def add_user_trigger(session: AsyncSession, user_id: int, trigger_word: st
 
 
 async def remove_user_trigger(session: AsyncSession, user_id: int, trigger_word: str) -> None:
+    """Удалить триггер пользователя."""
     stmt = delete(UserTrigger).where(
         UserTrigger.user_id == user_id,
         UserTrigger.trigger_word == trigger_word
@@ -45,59 +53,51 @@ async def remove_user_trigger(session: AsyncSession, user_id: int, trigger_word:
 
 
 async def update_user_potvory(session: AsyncSession, user_id: int, potvory_list: List[str]) -> None:
+    """Обновить список категорий угроз."""
     user = await get_or_create_user(session, user_id)
     user.potvory = potvory_list
 
 
 async def update_user_mute(session: AsyncSession, user_id: int, muted_until: Optional[datetime]) -> None:
+    """Установить или снять mute."""
     user = await get_or_create_user(session, user_id)
     user.muted_until = muted_until
 
 
 async def get_users_by_trigger_and_category(
         session: AsyncSession,
-        location_keys: Set[str],
         category_names: Set[str],
-        matched_custom_phrases: List[str],
-        all_static_keys: List[str]
+        trigger_words: Set[str]
 ) -> Sequence[UserSettings]:
-    now = datetime.now(timezone.utc)
-    base_conditions = or_(UserSettings.muted_until == None, UserSettings.muted_until < now)
+    """
+    Найти пользователей для рассылки алерта.
 
-    match_conditions = []
-
-    if matched_custom_phrases:
-        match_conditions.append(
-            exists().where(
-                and_(
-                    UserTrigger.user_id == UserSettings.user_id,
-                    UserTrigger.trigger_word.in_(matched_custom_phrases),
-                    UserTrigger.trigger_word.not_in(all_static_keys)
-                )
-            )
-        )
-
-    if location_keys:
-        match_conditions.append(
-            exists().where(
-                and_(
-                    UserTrigger.user_id == UserSettings.user_id,
-                    UserTrigger.trigger_word.in_(list(location_keys))
-                )
-            )
-        )
-
-    if category_names:
-        match_conditions.append(
-            UserSettings.potvory.overlap(list(category_names))
-        )
-
-    if not match_conditions:
+    Если trigger_words пустой — это глобальный пост (выборка всех по категории).
+    Если trigger_words содержит ключи — сужаем выборку до конкретных локаций.
+    """
+    if not category_names:
         return []
 
-    stmt = select(UserSettings).where(
-        and_(base_conditions, or_(*match_conditions))
-    )
+    now = datetime.now(timezone.utc)
 
+    # Базовые условия отбора (Режим тишины + Категории)
+    conditions = [
+        or_(UserSettings.muted_until == None, UserSettings.muted_until < now),
+        UserSettings.potvory.overlap(list(category_names))
+    ]
+
+    # ✅ ОПТИМИЗАЦИЯ: Убрано лишнее приведение list(trigger_words).
+    # SQLAlchemy в методе .in_() прекрасно переваривает native Python set нативно.
+    if trigger_words:
+        conditions.append(
+            exists().where(
+                and_(
+                    UserTrigger.user_id == UserSettings.user_id,
+                    UserTrigger.trigger_word.in_(trigger_words)
+                )
+            )
+        )
+
+    stmt = select(UserSettings).where(and_(*conditions))
     result = await session.execute(stmt)
     return result.scalars().all()

@@ -118,3 +118,7 @@ $RECYCLE.BIN/
 *.mp4
 *.avi
 *.mov
+# Сміття та звіти
+reports/
+project_context_dump.txt
+dump_project.py

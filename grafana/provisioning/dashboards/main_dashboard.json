@@ -1,0 +1,71 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "gauge",
+      "title": "Текущий размер DLQ (Пики за 1м)",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        { "expr": "max_over_time(worker_dlq_size[1m])", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Скорость обработки алертов воркером (Latency)",
+      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 0 },
+      "id": 2,
+      "targets": [
+        { "expr": "rate(worker_processing_duration_seconds_sum[1m]) / rate(worker_processing_duration_seconds_count[1m])", "legendFormat": "Среднее время (сек)", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, rate(worker_processing_duration_seconds_bucket[1m]))", "legendFormat": "p95 Latency (сек)", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Частота ошибок в системе (Error Rate)",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 6 },
+      "id": 3,
+      "targets": [
+        { "expr": "rate(worker_errors_total[1m])", "legendFormat": "Ошибки Воркера / сек", "refId": "A" },
+        { "expr": "rate(scraper_errors_total[1m])", "legendFormat": "Ошибки Скрейпера / сек", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Поток входящих сообщений (Scraper vs Worker)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "id": 4,
+      "targets": [
+        { "expr": "rate(scraper_messages_total[5m])", "legendFormat": "Перехвачено каналом", "refId": "A" },
+        { "expr": "rate(worker_alerts_processed_total[5m])", "legendFormat": "Разослано юзерам", "refId": "B" }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [],
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "OdesaAlert Bot Production Мониторинг",
+  "version": 2
+}

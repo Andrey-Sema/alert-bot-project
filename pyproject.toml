@@ -1,0 +1,43 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes
+    "I",    # isort (import sorting)
+    "B",    # flake8-bugbear (deep logical bugs)
+    "SIM",  # flake8-simplify (code style optimization)
+    "S"     # 🔒 ВНЕДРЕНИЕ: flake8-bandit (мгновенный статический анализ безопасности)
+]
+
+ignore = []
+
+[tool.mypy]
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = [
+    "aiogram.*",
+    "redis.*",
+    "pyrogram.*",
+    "sqlalchemy.*",
+    "prometheus_client.*"
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-ra -q --html=reports/unittest_report.html --self-contained-html --asyncio-mode=auto"
+testpaths = ["tests"]
+
+[tool.bandit]
+targets = ["alert_bot_project"]
+skips = ["B101"]

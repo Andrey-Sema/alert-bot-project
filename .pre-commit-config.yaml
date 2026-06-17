@@ -1,0 +1,49 @@
+# Предотвращает выполнение хуков на файлах, которые не относятся к кодовой базе Python/DevOps
+exclude: '^(\.venv|\.git|\.idea|\.vscode|__pycache__)/'
+
+default_stages: [pre-commit]
+
+repos:
+  # ✅ ФИКС: Добавлен базовый санитарный набор проверок безопасности и синтаксиса
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        description: "Удаляет лишние пробелы на концах строк"
+      - id: end-of-file-fixer
+        description: "Гарантирует наличие пустой строки в конце каждого текстового файла"
+      - id: check-yaml
+        description: "Проверяет валидность синтаксиса всех YAML конфигов (Prometheus, Grafana, Compose)"
+      - id: check-json
+        description: "Проверяет валидность JSON схем (Grafana dashboards)"
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+        description: "Блокирует случайный коммит тяжелых бинарников, дампов БД или логов (>500 КБ)"
+      - id: detect-private-key
+        description: "Жесткий контроль безопасности: блокирует коммит приватных SSH/TLS ключей"
+
+  # ✅ ФИКС: Обновлен Ruff до актуальной и стабильной версии 2026 года
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.5
+    hooks:
+      - id: ruff
+        args: [ --fix ]
+        description: "Сверхбыстрый линтинг, автосортировка импортов (isort) и автоисправление ошибок"
+      - id: ruff-format
+        description: "Консистентное форматирование кода по канонам Black"
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        # types-redis необходим для тайп-чекинга асинхронного клиента redis.asyncio.Redis
+        additional_dependencies: [ types-redis, pydantic, sqlalchemy ]
+        description: "Строгая статическая проверка типов Python"
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: v1.7.9
+    hooks:
+      - id: bandit
+        args: ["-c", "pyproject.toml"]
+        additional_dependencies: [ "bandit[toml]" ]
+        description: "Анализатор безопасности: поиск уязвимостей, eval(), pickle и захардкоженных секретов"

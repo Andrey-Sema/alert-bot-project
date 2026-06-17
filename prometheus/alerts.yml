@@ -1,0 +1,64 @@
+groups:
+  - name: odesa_alert_core_rules
+    rules:
+
+      # =========================================================================
+      # КРИТИЧЕСКИЕ АЛЕРТЫ (СИСТЕМА СДОХЛА / ТРЕБУЕТСЯ СРОЧНОЕ ВМЕШАТЕЛЬСТВО)
+      # =========================================================================
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "💀 Сервіс {{ $labels.job }} УПАВ"
+          description: "Контейнер {{ $labels.instance }} не віддає метрики Прометею більше 3 хвилин. Інфраструктура під загрозою."
+
+      - alert: RedisDown
+        # ✅ ФИКС: Добавлен мониторинг брокера сообщений. Критично для Redis Streams
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🚨 Брокер Redis УПАВ"
+          description: "Центральний транспорт повідомлень (Redis Streams) недоступний. Скрейпер та воркер повністю заблоковані!"
+
+      - alert: HighWorkerErrors
+        # ✅ УЛУЧШЕНИЕ: Защита от деления на ноль. Алерт сработает, если за 5 минут произошло
+        # больше 5 ошибок И их количество превышает 10% от общего потока обработанных алертов.
+        expr: |
+          increase(worker_errors_total[5m]) > 5 
+          and 
+          (rate(worker_errors_total[5m]) / rate(worker_alerts_processed_total[5m]) > 0.10)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🦅 Воркер сипле помилками (High Error Rate)"
+          description: "Рівень помилок воркера на інстансі {{ $labels.instance }} перевищив 10% від успішно надісланих повідомлень."
+
+      - alert: HighScraperErrors
+        expr: increase(scraper_errors_total[5m]) > 5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🛰️ Скрейпер сипле помилками"
+          description: "Юзербот на інстансі {{ $labels.instance }} зафіксував більше 5 збоїв трансляції потоку за останні 5 хвилин."
+
+      # =========================================================================
+      # ПРЕДУПРЕЖДЕНИЯ (ЕЩЕ РАБОТАЕТ, НО СКОРО БУДЕТ ПЛОХО)
+      # =========================================================================
+
+      - alert: DeadLetterQueueGrows
+        # ✅ КРИТИЧЕСКИЙ ФИКС: Внедрен скользящий максимум за 1 минуту.
+        # Теперь Прометей гарантированно поймает пиковые затыки в очереди "мертвых" сообщений.
+        expr: max_over_time(worker_dlq_size[1m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "⚠️ Росте черга DLQ (Застряглі повідомлення)"
+          description: "У мертвій черзі dead_letter_queue накопичилось {{ $value }} битих пайлоадів. Потрібен ручний розбір логів."

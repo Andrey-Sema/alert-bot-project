@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,9 +15,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field(..., description="Connection string for PostgreSQL / Supabase")
     REDIS_URL: str = Field("redis://localhost:6379/0", description="Connection string for Redis instance")
 
+    # ✅ ФИКС: Добавлены строгие диапазоны портов (ge=1024, le=65535) для предотвращения системных сбоев
+    METRICS_PORT_WORKER: int = Field(8000, ge=1024, le=65535, description="Prometheus metrics port for worker service")
+    METRICS_PORT_SCRAPER: int = Field(8001, ge=1024, le=65535, description="Prometheus metrics port for scraper service")
+    METRICS_PORT_BOT: int = Field(8002, ge=1024, le=65535, description="Prometheus metrics port for bot UI service")
+
     # Quiet Hours (Night Mode) Settings
-    NIGHT_START_HOUR: int = Field(22, description="Start hour for quiet hours/night mode status")
-    NIGHT_END_HOUR: int = Field(7, description="End hour for quiet hours/night mode status")
+    # ✅ ФИКС: Ограничение диапазона времени (от 0 до 23 часов) на уровне валидации схемы Pydantic
+    NIGHT_START_HOUR: int = Field(22, ge=0, le=23, description="Start hour for quiet hours/night mode status")
+    NIGHT_END_HOUR: int = Field(7, ge=0, le=23, description="End hour for quiet hours/night mode status")
 
     # Production Logging Engine Configuration
     LOG_LEVEL: str = Field("INFO", description="Global application logging threshold level")
@@ -27,6 +33,14 @@ class Settings(BaseSettings):
 
     # Fix: Removed magic numbers by adding configurable network threshold parameters
     TELEGRAM_MAX_RETRY_SECONDS: int = Field(180, description="Maximum total allowed cumulative sleep duration for Telegram 429 backoff")
+
+    # ✅ ФИКС: Модель-валидатор для атомарной проверки уникальности портов на этапе инициализации контейнера
+    @model_validator(mode="after")
+    def validate_unique_ports(self) -> "Settings":
+        ports = [self.METRICS_PORT_WORKER, self.METRICS_PORT_SCRAPER, self.METRICS_PORT_BOT]
+        if len(ports) != len(set(ports)):
+            raise ValueError(f"Metrics ports must be completely unique to prevent internal network conflicts. Provided ports: {ports}")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

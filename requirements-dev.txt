@@ -1,0 +1,5 @@
+
+pytest==8.2.2
+pytest-asyncio==0.23.7
+pytest-html==4.1.1
+hypothesis==6.103.1
