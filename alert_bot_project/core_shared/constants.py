@@ -1,75 +1,101 @@
-# Target time zones and pagination configurations
-KYIV_TZ = "Europe/Kyiv"
-DISLOCS_PER_PAGE = 8
-MAX_CUSTOM_TRIGGERS = 5
-
 # Odesa municipal locations mapping with root stems for suffix matching
 ODESA_LOCS = {
     "city": {"emoji": "🏙️", "display": "Місто (Загально)", "patterns": ["город", "міст", "одеськ", "одес"]},
-    "center": {"emoji": "⚡", "display": "Центр", "patterns": ["центр"]},
-    "cheremushki": {"emoji": "🏢", "display": "Черемушки", "patterns": ["черемушк", "черьомушк"]},
-    "port": {"emoji": "⚓", "display": "Порт", "patterns": ["port", "порт"]},  # Добавлен английский вариант на всякий случай
-    "moldovanka": {"emoji": "🚏", "display": "Молдованка", "patterns": ["молдаванк", "молдованк", "молдовк", "молдаванц"]},
-    "bugaevka": {"emoji": "🚂", "display": "Бугаєвка", "patterns": ["бугаевк", "бугаївк", "бугаївц"]},
-    "slobodka": {"emoji": "🏘️", "display": "Слобідка", "patterns": ["слободк", "слобідк", "слобідц"]},
-    "tairovo": {"emoji": "🌆", "display": "Таїрове", "patterns": ["таиров", "таїров"]},
-    "sovignon": {"emoji": "🏖️", "display": "Совіньйон", "patterns": ["совиньон", "совіньйон"]},
-    "lanzheron": {"emoji": "🌊", "display": "Ланжерон", "patterns": ["ланжерон"]},
-    "kotovskogo": {"emoji": "🏚️", "display": "Селище Котовського", "patterns": ["поселок", "поскот", "котовск", "котовськ"]},
-    "yuzhny_dist": {"emoji": "🌞", "display": "Південний район", "patterns": ["південн"]},
-    "fontanka": {"emoji": "⛲", "display": "Фонтанка", "patterns": ["фонтанк"]},
+    "center": {"emoji": "⚡", "display": "Центр", "patterns": ["центр", "гор сад", "горсад", "дерибасовск"]},
+    "cheremushki": {"emoji": "🏢", "display": "Черемушки", "patterns": ["черемушк", "черьомушк", "черемух"]},
+    "kyivskyi_dist": {"emoji": "🏢", "display": "Київський район", "patterns": ["киевск", "київськ"]},  # ✅ НОВОЕ
+    "port": {"emoji": "⚓", "display": "Порт", "patterns": ["port", "порт", "морвокзал"]},
+    "moldovanka": {"emoji": "🚏", "display": "Молдованка",
+                   "patterns": ["молдаванк", "молдованк", "молдовк", "молдаванц"]},
+    "bugaevka": {"emoji": "🚂", "display": "Бугаєвка", "patterns": ["бугаевк", "бугаївк", "бугаївц", "бугаєвк"]},
+    "slobodka": {"emoji": "🏘️", "display": "Слобідка", "patterns": ["слободк", "слобідк", "слобідц", "слабодк"]},
+    "tairovo": {"emoji": "🌆", "display": "Таїрове", "patterns": ["таиров", "таїров", "таеров"]},
+    "sovignon": {"emoji": "🏖️", "display": "Совіньйон", "patterns": ["совиньон", "совіньйон", "савиньон"]},
+    "lanzheron": {"emoji": "🌊", "display": "Ланжерон", "patterns": ["ланжерон", "лонжерон"]},
+    "luzanovka": {"emoji": "🏖️", "display": "Лузанівка", "patterns": ["лузановк", "лузанівк"]},
+    "kotovskogo": {"emoji": "🏚️", "display": "Селище Котовського",
+                   "patterns": ["поселок", "поскот", "котовск", "котовськ"]},
+    "fontanka": {"emoji": "⛲", "display": "Фонтанка", "patterns": ["фонтанк", "фантан", "фонтан", "фонатнк"]},
+    # ✅ ФИКС: добавили "фонатнк"
     "peresyp": {"emoji": "🌉", "display": "Пересип", "patterns": ["пересып", "пересип"]},
-    "arkadia": {"emoji": "🌴", "display": "Аркадія", "patterns": ["аркади", "аркаді"]},
-    "coast": {"emoji": "🌊", "display": "Узбережжя", "patterns": ["берег", "побереж", "узбереж"]}
+    "arkadia": {"emoji": "🌴", "display": "Аркадія", "patterns": ["аркади", "аркаді", "оркади"]},
+    "coast": {"emoji": "🌊", "display": "Узбережжя", "patterns": ["берег", "побереж", "узбереж", "море", "моря"]}
 }
 
 # Regional / Suburb locations mapping with root stems
 OUTSIDE_LOCS = {
     "usatovo": {"emoji": "🌾", "display": "Усатове", "patterns": ["усатов"]},
-    "yuzhne": {"emoji": "🌻", "display": "Южне", "patterns": ["южн", "южно"]},
-    "belyaevka": {"emoji": "🌾", "display": "Біляївка", "patterns": ["беляевк", "біляївк"]},
-    "ovidiopol": {"emoji": "🌅", "display": "Овідіополь", "patterns": ["овидиопол", "овідіопол"]},
-    "chernomorsk": {"emoji": "⚓", "display": "Чорноморськ", "patterns": ["черноморс", "чорноморс"]},
+    "yuzhne": {"emoji": "🌻", "display": "Южне", "patterns": ["южн", "южно", "южний", "південн"]},
+    "belyaevka": {"emoji": "🌾", "display": "Біляївка", "patterns": ["беляевк", "біляївк", "беляивк"]},
+    "ovidiopol": {"emoji": "🌅", "display": "Овідіополь", "patterns": ["овидиопол", "овідіопол", "овидиополь"]},
+    "chernomorsk": {"emoji": "⚓", "display": "Чорноморськ",
+                    "patterns": ["черноморс", "чорноморс", "ильичевск", "іллічівськ", "ильич", "ілліч"]},
     "chernomorka": {"emoji": "🌊", "display": "Чорноморка", "patterns": ["черноморк", "чорноморк"]},
-    "novi_belyari": {"emoji": "🌳", "display": "Нові Білярі", "patterns": ["новые беляр", "нові біляр", "нові біляри"]},
+    "novi_belyari": {"emoji": "🌳", "display": "Нові Білярі", "patterns": ["новые беляр", "нові біляр", "новие беляр"]},
+    "opz": {"emoji": "🏭", "display": "ОПЗ / Припортовий", "patterns": ["припортов", "опз"]},
+    "vyzyrka": {"emoji": "🏘️", "display": "Визирка", "patterns": ["визирк", "візирк"]},
+    "sychavka": {"emoji": "🏡", "display": "Сичавка", "patterns": ["сычавк", "сичавк"]},
     "reni": {"emoji": "🛳️", "display": "Рені", "patterns": ["рен"]},
-    "izmail": {"emoji": "🚢", "display": "Ізмаїл", "patterns": ["измаил", "ізмаїл"]},
-    "tatarbunary": {"emoji": "🏞️", "display": "Татарбунари", "patterns": ["татарбунар"]},
-    "berezovka": {"emoji": "🌳", "display": "Березівка", "patterns": ["березовк", "березівк"]},
-    "vilkovo": {"emoji": "🚤", "display": "Вилкове", "patterns": ["вилков"]},
+    "izmail": {"emoji": "🚢", "display": "Ізмаїл", "patterns": ["измаил", "ізмаїл", "измаїл"]},
+    "tatarbunary": {"emoji": "🏞️", "display": "Татарбунари", "patterns": ["татарбунар", "татарбун"]},
+    "berezovka": {"emoji": "🌳", "display": "Березівка", "patterns": ["березовк", "березівк", "березевк"]},
+    "vilkovo": {"emoji": "🚤", "display": "Вилкове", "patterns": ["вилков", "вілков"]},
     "avangard": {"emoji": "🎯", "display": "Авангард", "patterns": ["авангард"]},
     "limanka": {"emoji": "🏞️", "display": "Лиманка", "patterns": ["лиманк"]},
-    "zatoka": {"emoji": "🏖️", "display": "Затока", "patterns": ["заток"]},
-    "belgorod": {"emoji": "🏰", "display": "Білгород-Дністровський", "patterns": ["белгород", "білгород"]},
+    "zatoka": {"emoji": "🏖️", "display": "Затока", "patterns": ["заток", "бугаз"]},
+    "sanzheika": {"emoji": "🌊", "display": "Санжійка", "patterns": ["санжейк", "санжійк"]},
+    "hrybivka": {"emoji": "🏕️", "display": "Грибівка", "patterns": ["грибовк", "грибівк"]},
+    "burlacha_balka": {"emoji": "⚓", "display": "Бурлача Балка", "patterns": ["бурлач"]},
+    "belgorod": {"emoji": "🏰", "display": "Білгород-Дністровський",
+                 "patterns": ["белгород", "білгород", "аккерман", "бд"]},
     "teplodar": {"emoji": "🔥", "display": "Теплодар", "patterns": ["теплодар"]},
     "dobroslav": {"emoji": "🌄", "display": "Доброслав", "patterns": ["доброслав"]},
-    "tuzly": {"emoji": "🌊", "display": "Тузли", "patterns": ["тузл"]}
+    "kurysove": {"emoji": "🏡", "display": "Курісове", "patterns": ["курисов", "курісов"]},
+    "tuzly": {"emoji": "🌊", "display": "Тузли", "patterns": ["тузл", "тузлi"]},
+    "kurortne": {"emoji": "🏖️", "display": "Курортне", "patterns": ["курортн", "куротн"]},
+    "shyroke": {"emoji": "🌾", "display": "Широке", "patterns": ["широк"]},
+    "kulevcha": {"emoji": "🏘️", "display": "Кулевча", "patterns": ["кулевч", "кулівч"]},
+    "sarata": {"emoji": "🛤️", "display": "Сарата", "patterns": ["сарат"]},
+    "prymorske": {"emoji": "🌊", "display": "Приморське", "patterns": ["приморск", "приморськ"]},
+    "serhiivka": {"emoji": "🏥", "display": "Сергіївка", "patterns": ["сергеевк", "сергіївк", "сиргеевк"]},
+    "marazliivka": {"emoji": "🏡", "display": "Маразліївка", "patterns": ["маразлиевк", "маразліївк", "моразлиевк"]},
+    "mizhlymannia": {"emoji": "🏞️", "display": "Міжлимання", "patterns": ["межлиман", "міжлиман"]},
+    "nati": {"emoji": "🏭", "display": "НАТІ", "patterns": ["нати", "наті", "нате"]},
+    "kholodna_balka": {"emoji": "🧊", "display": "Холодна Балка",
+                       "patterns": ["холодная балк", "холодна балк", "холодную балк", "холодну балк"]},
+    "velyka_balka": {"emoji": "⛰️", "display": "Велика Балка",
+                     "patterns": ["велик балк", "великую балк", "велику балк"]},
+    "dachne": {"emoji": "🏡", "display": "Дачне", "patterns": ["дачн"]},
+    "nerubaiske": {"emoji": "🪨", "display": "Нерубайське", "patterns": ["неруб", "нерубайск", "нерубайськ"]},
+    "bolshevik": {"emoji": "🏭", "display": "Більшовик", "patterns": ["большевик", "більшовик"]},
+    "krasnosilka": {"emoji": "🏘️", "display": "Красносілка", "patterns": ["красноселк", "красносілк"]},
+    "avhustivka": {"emoji": "🏡", "display": "Августівка", "patterns": ["августовк", "августівк"]},
+    "altestove": {"emoji": "🌳", "display": "Алтестове", "patterns": ["алтестов"]},
+    "ilichanka": {"emoji": "🏡", "display": "Іллічанка", "patterns": ["ильичанк", "іллічанк"]},
+    "kryzhanivka": {"emoji": "🌊", "display": "Крижанівка", "patterns": ["крыжановк", "крижанівк"]},
+    "velykyi_dalnyk": {"emoji": "🛣️", "display": "Великий Дальник", "patterns": ["дальник"]},
+    "kobleve": {"emoji": "🍷", "display": "Коблеве", "patterns": ["коблев"]},
+    "rybakivka": {"emoji": "🐟", "display": "Рибаківка", "patterns": ["рыбаковк", "рибаківк"]},
+
+    # ✅ НОВЫЕ ЛОКАЦИИ
+    "monashi": {"emoji": "🌾", "display": "Монаші", "patterns": ["монаш"]},
+    "aleksandrovka": {"emoji": "🏘️", "display": "Олександрівка",
+                      "patterns": ["александровк", "олександрівк", "александр"]},
+    "rozdilna": {"emoji": "🛤️", "display": "Роздільна", "patterns": ["раздельн", "роздільн"]}
 }
 
-# ✅ ВНЕДРЕНИЕ: Новые тактические синонимы и сленг с поддержкой суффиксов
 KR_POTVORY = {
     "Мопеди": [
         "мопед", "дрон", "шахед", "табун", "бпла", "літачок", "атака", "шахід",
-        "шлюхед",       # Матчит: шлюхед, шлюхеды, шлюхеда
-        "шлюх",         # Матчит: шлюхи, шлюха, шлюху
-        "турбодизел",   # Матчит: турбодизель, турбодизели
-        "турбодизельн", # Матчит: турбодизельные, турбодизельный (хвост "ые"/"ый" входит в лимит \w{0,2})
-        "реактивыч",    # Матчит: реактивыч, реактивычи
-        "реактив",      # Матчит: реактив, реактивы
-        "реактивн"      # Матчит: реактивный, реактивные, реактивного
+        "шлюхед", "шлюх", "турбодизел", "турбодизельн", "реактивыч", "реактив", "reaktivn",
+        "шмээ", "шмэээ", "нюх-нюх", "нюхнюх", "шехед"  # ✅ ФИКС: добавили "шехед"
     ],
     "Ракети": [
-        "ракет", "балумба", "балістик", "балистик", "іскандер", "искандер", "касет", "кассет",
-        "вихід", "выход", "пуск", "х101", "калібр", "калибр",
-        "х22", "х-22",  # Ракеты Х-22 (оба варианта написания)
-        "циркон",       # Циркон
-        "цыркон"        # Цыркон (через "ы" от безграмотных админов)
+        "ракет", "балумба", "балістик", "балистик", "баллистик", "іскандер", "искандер", "касет", "кассет",
+        "вихід", "выход", "пуск", "х101", "калібр", "калибр", "х22", "х-22", "циркон", "цыркон",
+        "отрк", "ту-95", "ту95", "ту-22", "ту22"  # ✅ ФИКС: добавили баллистику и авиацию
+    ],
+    "Морські цілі": [
+        "бэк", "мбэк", "катер", "морской дрон", "морський дрон"
     ]
 }
-
-ALERT_FIRST = "🚨 <b>Увага! Загроза у вашому напрямку!</b> Негайно прямуйте до укриття!"
-ALERT_SECOND = "🔔 <b>[2/3] Загроза все ще актуальна!</b> Повідомлення дублюється для вашої безпеки."
-ALERT_THIRD = "🔔 <b>[3/3] Будь ласка, підтвердіть отримання</b> та перебування в безпечному місці!"
-
-ALERT_DELAY_1 = 5
-ALERT_DELAY_2 = 60

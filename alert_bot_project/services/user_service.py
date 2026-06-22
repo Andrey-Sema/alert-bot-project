@@ -37,8 +37,9 @@ class UserService:
         static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
         custom_count = len([t for t in user.triggers_set if t not in static_keys])
 
+        # ✅ СЕНЬОР-ФИКС: Убран хардкод цифры 5. Теперь лимит подтягивается динамически из констант
         if custom_count >= MAX_CUSTOM_TRIGGERS:
-            return False, "🚫 Ви вже досягли ліміту у 5 кастомних локацій."
+            return False, f"🚫 Ви вже досягли ліміту у {MAX_CUSTOM_TRIGGERS} кастомних локацій."
 
         success = await add_user_trigger(self.session, user_id, trigger_word)
         if success:
@@ -94,7 +95,6 @@ class UserService:
         await self.redis.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
         return text_reply
 
-    # ✅ СИМЕТРІЯ: Новий атомарний метод для підтвердження загрози зсередини сервісу
     async def acknowledge_alert(self, user_id: int) -> str:
         """Тимчасово глушить сповіщення на 10 хвилин при підтвердженні сигналу."""
         until = datetime.now(timezone.utc) + timedelta(minutes=10)

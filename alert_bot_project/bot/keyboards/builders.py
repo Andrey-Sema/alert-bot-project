@@ -6,7 +6,7 @@ from alert_bot_project.core_shared.callbacks import (
     MutePresetCallback, CustomActionCallback
 )
 
-# ✅ ФИКС: Централизованные константы путей навигации (избавляемся от магических строк)
+# Централизованные константы путей навигации (избавляемся от магических строк)
 MENU_MAIN = "menu:main"
 MENU_CHOOSE_GROUP = "menu:choose_group"
 MENU_CUSTOM_MANAGE = "menu:custom_manage"
@@ -17,7 +17,6 @@ CUSTOM_ADD = "custom:add"
 ALERT_ACK = "alert:ack"
 
 
-# ✅ КРИТИЧЕСКИЙ ФИКС: Функция спасена из вложенного скоупа и поднята на уровень модуля
 def build_back_to_main_keyboard() -> InlineKeyboardMarkup:
     """Генерує уніфіковану кнопку повернення до головного меню."""
     kb = InlineKeyboardBuilder()
@@ -65,14 +64,14 @@ def build_locations_paginated_keyboard(group: str, active_user_triggers: set[str
         is_active = inv_key in active_user_triggers
         status_marker = "✅" if is_active else "❌"
         button_label = f"{status_marker} {meta['emoji']} {meta['display']}"
-        kb.button(text=button_label, callback_data=LocationToggleCallback(group=group, inv_key=inv_key, page=page).pack())
+        # ✅ СЕНЬОР-ФИКС: Передаем location_key вместо старого inv_key, чтобы соответствовать схеме Pydantic
+        kb.button(text=button_label, callback_data=LocationToggleCallback(group=group, location_key=inv_key, page=page).pack())
 
     if page > 0:
         kb.button(text="⬅️ Попередні", callback_data=GroupNavCallback(group=group, page=page - 1).pack())
     if end_index < total_items:
         kb.button(text="Наступні ➡️", callback_data=GroupNavCallback(group=group, page=page + 1).pack())
 
-    # ✅ СТЫКОВКА: Использование констант вместо хардкода сырых строк
     kb.button(text="➕ Додати власну локацію", callback_data=CUSTOM_ADD)
     kb.button(text="⬅️ Назад до груп", callback_data=MENU_CHOOSE_GROUP)
     kb.adjust(2)
