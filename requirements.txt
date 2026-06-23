@@ -6,4 +6,5 @@ asyncpg==0.31.0
 redis==5.2.1
 pyrogram==2.0.106
 prometheus-client==0.25.0
-# tgCrypto==1.2.5
+tgCrypto==1.2.5
+tzdata

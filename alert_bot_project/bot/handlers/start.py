@@ -2,7 +2,7 @@ import logging
 from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
-from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alert_bot_project.database.crud import get_or_create_user
@@ -22,12 +22,14 @@ async def process_start_command(message: Message, db_session: AsyncSession):
     try:
         await get_or_create_user(db_session, user_id)
         logger.info("User ID %d successfully initiated /start command session.", user_id)
-    except (SQLAlchemyError, OperationalError) as db_err:
-        logger.error("Database transport failure during user session initialization: %s", db_err)
+    except SQLAlchemyError:
+        # ✅ СЕНЬОР-ФИКС: Избыточный перехват OperationalError убран, так как он наследуется от SQLAlchemyError.
+        # Заодно переведено на канонический .exception()
+        logger.exception("Database transport failure during user session initialization")
         await message.answer("⚠️ Виникла помилка під час реєстрації. Будь ласка, спробуйте пізніше.")
         return
-    except Exception as unexpected_err:
-        logger.critical("Unexpected framework thread exception inside start handler context: %s", unexpected_err, exc_info=True)
+    except Exception:
+        logger.exception("Unexpected framework thread exception inside start handler context")
         await message.answer("⚠️ Критична помилка системи. Спробуйте пізніше.")
         return
 

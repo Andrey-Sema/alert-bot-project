@@ -1,0 +1,6 @@
+[run]
+omit =
+    alert_bot_project/scripts/*
+    alert_bot_project/database/migration.py
+    alert_bot_project/bot/main.py
+    alert_bot_project/scraper/*

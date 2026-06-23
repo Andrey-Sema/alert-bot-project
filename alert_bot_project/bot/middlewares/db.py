@@ -20,24 +20,21 @@ class DatabaseMiddleware(BaseMiddleware):
             try:
                 result = await handler(event, data)
 
-                # ✅ ФИКС: Защита краевого случая. Коммитим только если транзакция активна
-                # и сессия не была принудительно закрыта или инвалидирована внутри хендлера
                 if session.is_active:
                     await session.commit()
 
                 return result
 
-            except SQLAlchemyError as db_err:
-                # ✅ ФИКС: Дифференциация ошибок. Выделяем сбои БД в отдельный критический контекст
-                logger.error("Критична помилка бази даних SQLAlchemy під час обробки апдейту: %s", db_err,
-                             exc_info=True)
+            except SQLAlchemyError:
+                # ✅ ФИКС С СОНАРОМ (python:S8572): Использование правильного логгера сеньор-уровня .exception()
+                logger.exception("Критична помилка бази даних SQLAlchemy під час обробки апдейту")
                 if session.is_active:
                     await session.rollback()
                 raise
 
-            except Exception as e:
-                # ✅ ФИКС: Обработка неожиданных исключений логики/валидации приложения
-                logger.error("Неочікувана помилка виконання хендлера під час обробки апдейту: %s", e, exc_info=True)
+            except Exception:
+                # ✅ ФИКС С СОНАРОМ (python:S8572): Перевод на .exception() без явной ручной передачи стейка трассировки
+                logger.exception("Неочікувана помилка виконання хендлера під час обробки апдейту")
                 if session.is_active:
                     await session.rollback()
                 raise

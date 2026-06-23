@@ -35,7 +35,6 @@ class TestCrudUserWorkflow:
 
         assert user.user_id == 111
         assert user.potvory == ["Ракети"]
-        # Проверяем, что был только один select, а инсерт не вызывался
         assert mock_session.execute.call_count == 1
 
     @pytest.mark.asyncio
@@ -53,11 +52,28 @@ class TestCrudUserWorkflow:
 
         user = await get_or_create_user(mock_session, 222)
 
-        # ✅ ФИКС: Проверяем семантику поведения и контракт возвращаемых данных, а не детали реализации
         assert user.user_id == 222
         assert user.potvory == ["Мопеди", "Ракети"]
-        assert mock_session.flush.called
+        mock_session.flush.assert_awaited_once()
         assert mock_session.execute.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_remove_user_trigger_execution(self, mock_session: AsyncMock) -> None:
+        """Проверка изолированного удаления триггера пользователя через delete-выражение"""
+        await remove_user_trigger(mock_session, user_id=123, trigger_word="center")
+        mock_session.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_user_mute_execution(self, mock_session: AsyncMock) -> None:
+        """Проверка мутации времени глушения пользователя"""
+        mock_user = UserSettings(user_id=123, potvory=["Ракети"])
+        mock_res = MagicMock()
+        mock_res.scalar_one_or_none.return_value = mock_user
+        mock_session.execute.return_value = mock_res
+
+        until_time = datetime.now(timezone.utc)
+        await update_user_mute(mock_session, user_id=123, muted_until=until_time)
+        assert mock_user.muted_until == until_time
 
     @pytest.mark.asyncio
     async def test_get_users_by_trigger_empty_categories_returns_empty_immediately(self,
@@ -109,7 +125,7 @@ class TestCrudPropertyBased:
 
         mock_res_fail = MagicMock()
         mock_res_fail.rowcount = 0
-        mock_session.execute.value = mock_res_fail
+        mock_session.execute.return_value = mock_res_fail
 
         res_false = await add_user_trigger(mock_session, user_id, trigger_word)
         assert res_false is False

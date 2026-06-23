@@ -14,7 +14,6 @@ class TestDatabaseMiddleware:
         mock_session = AsyncMock()
         mock_session.is_active = True
 
-        # Мокаем фабрику сессий AsyncSessionLocal, чтобы она возвращала наш асинхронный контекстный менеджер
         with patch("alert_bot_project.bot.middlewares.db.AsyncSessionLocal") as mock_session_local:
             mock_session_local.return_value.__aenter__.return_value = mock_session
 
@@ -25,7 +24,6 @@ class TestDatabaseMiddleware:
 
             result = await middleware(mock_handler, mock_event, mock_data)
 
-            # Проверяем контракт:
             assert result == "success_payload"
             assert "db_session" in mock_data
             assert mock_data["db_session"] == mock_session
@@ -42,7 +40,6 @@ class TestDatabaseMiddleware:
             mock_session_local.return_value.__aenter__.return_value = mock_session
 
             middleware = DatabaseMiddleware()
-            # Эмулируем жесткий взрыв базы данных внутри хендлера
             mock_handler = AsyncMock(side_effect=SQLAlchemyError("Supabase connection timeout"))
             mock_event = MagicMock()
             mock_data = {}

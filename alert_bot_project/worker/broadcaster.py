@@ -41,8 +41,8 @@ class Broadcaster:
         self.queue = asyncio.Queue(maxsize=10000)
         self._workers = []
         self._salt = config.API_HASH.encode()
+        self._background_tasks = set()
 
-        # ✅ ФИКС: Кэшируем параметры времени один раз при старте, чтобы не парсить строки в high-load цикле
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
         self._night_end = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
         self._tz = ZoneInfo(KYIV_TZ)
@@ -50,7 +50,8 @@ class Broadcaster:
     def _hash_id(self, chat_id: int) -> str:
         return hmac.new(self._salt, str(chat_id).encode(), hashlib.sha256).hexdigest()[:16]
 
-    async def start(self):
+    def start(self):
+        # ✅ ФИКС С СОНАРОМ (python:S7503): Убран избыточный async/await, так как создание тасков синхронно
         if not self._workers:
             self._workers = [asyncio.create_task(self._queue_worker()) for _ in range(self.workers_count)]
 
@@ -60,7 +61,7 @@ class Broadcaster:
         for w in self._workers:
             w.cancel()
         await asyncio.gather(*self._workers, return_exceptions=True)
-        logger.info("Воркери розсилки успішно зупинені.")
+        logger.info("Воркери розсилки успешно остановлены.")
 
     async def _queue_worker(self):
         while True:
@@ -71,9 +72,9 @@ class Broadcaster:
                 finally:
                     self.queue.task_done()
             except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Queue worker exception: {e}")
+                raise
+            except Exception:
+                logger.exception("Queue worker exception")
 
     async def send_single_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None,
                                   disable_notification: bool = False):
@@ -97,11 +98,11 @@ class Broadcaster:
                 logger.warning("Telegram API 429. Ожидание %s сек для peer: %s", wait_duration, peer_hash)
                 await asyncio.sleep(wait_duration)
                 total_time_waited += wait_duration
-            except TelegramAPIError as e:
-                logger.error("Telegram API ошибка для peer %s: %s", peer_hash, e)
+            except TelegramAPIError:
+                logger.exception("Telegram API ошибка для peer %s", peer_hash)
                 return False
-            except Exception as e:
-                logger.error("Транспортная ошибка для peer %s: %s", peer_hash, e)
+            except Exception:
+                logger.exception("Транспортная ошибка для peer %s", peer_hash)
                 return False
 
         logger.error("Таймаут доставки превышен для peer %s.", peer_hash)
@@ -114,7 +115,9 @@ class Broadcaster:
         except asyncio.QueueFull:
             logger.warning("Внутренняя очередь переполнена. Запуск фоновой принудительной записи для peer %s",
                            self._hash_id(chat_id))
-            asyncio.create_task(self.queue.put((chat_id, text, reply_markup, disable_notification)))
+            task = asyncio.create_task(self.queue.put((chat_id, text, reply_markup, disable_notification)))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def _execute_scheduling(self, chat_id: int, disable_notification: bool):
         try:
@@ -126,11 +129,33 @@ class Broadcaster:
                 json.dumps(task_step_2): now_unix + ALERT_DELAY_1,
                 json.dumps(task_step_3): now_unix + ALERT_DELAY_1 + ALERT_DELAY_2
             })
-        except Exception as e:
-            logger.error("Сбой записи в отложенную очередь для peer %s: %s", self._hash_id(chat_id), e)
+        except Exception:
+            logger.exception("Сбой записи в отложенную очередь для peer %s", self._hash_id(chat_id))
 
     def schedule_delayed_alerts(self, chat_id: int, disable_notification: bool):
-        asyncio.create_task(self._execute_scheduling(chat_id, disable_notification))
+        task = asyncio.create_task(self._execute_scheduling(chat_id, disable_notification))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _process_single_delayed_task(self, task_raw: str):
+        """✅ СЕНЬОР-ФИКС: Вынесено в отдельный метод для декомпозиции сложности (Cognitive Complexity)."""
+        try:
+            task_data = json.loads(task_raw)
+        except json.JSONDecodeError:
+            logger.exception("Сбой парсинга JSON отложенной задачи")
+            return
+
+        user_id = task_data["chat_id"]
+
+        if await self.redis.exists(f"user_mute:{user_id}"):
+            logger.debug("Отложенное уведомление пропущено: peer %s находится в режиме MUTE", self._hash_id(user_id))
+            return
+
+        self.fire_and_forget_message(
+            chat_id=user_id,
+            text=task_data["text"],
+            disable_notification=task_data.get("silent", False)
+        )
 
     async def process_delayed_alerts(self):
         script = self.redis.register_script(POP_MATURE_TASKS_LUA)
@@ -143,8 +168,6 @@ class Broadcaster:
                     await asyncio.sleep(2)
                     continue
 
-                # ✅ КРИТИЧЕСКИЙ ФИКС: Контракт абсолютной дневной тишины.
-                # Если отложенный алерт созрел, но на дворе уже наступил день — сбрасываем выполнение.
                 now_time = datetime.now(self._tz).time()
                 if self._night_start > self._night_end:
                     is_night = now_time >= self._night_start or now_time <= self._night_end
@@ -156,30 +179,12 @@ class Broadcaster:
                     continue
 
                 for task_raw in tasks:
-                    try:
-                        task_data = json.loads(task_raw)
-                    except json.JSONDecodeError as je:
-                        logger.error("Сбой парсинга JSON отложенной задачи: %s", je)
-                        continue
-
-                    user_id = task_data["chat_id"]
-
-                    if await self.redis.exists(f"user_mute:{user_id}"):
-                        logger.debug("Отложенное уведомление пропущено: peer %s находится в режиме MUTE",
-                                     self._hash_id(user_id))
-                        continue
-
-                    is_silent = task_data.get("silent", False)
-                    self.fire_and_forget_message(
-                        chat_id=user_id,
-                        text=task_data["text"],
-                        disable_notification=is_silent
-                    )
+                    await self._process_single_delayed_task(task_raw)
 
                 await asyncio.sleep(0.05)
 
             except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.error("Сбой демона отложенных сообщений: %s", exc)
+                raise
+            except Exception:
+                logger.exception("Сбой демона отложенных сообщений")
                 await asyncio.sleep(2)

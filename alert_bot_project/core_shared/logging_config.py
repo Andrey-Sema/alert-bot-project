@@ -13,7 +13,6 @@ class StructuredJsonFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        # Build core structured fields payload contract
         log_payload = {
             "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
@@ -23,11 +22,9 @@ class StructuredJsonFormatter(logging.Formatter):
             "thread_name": record.threadName
         }
 
-        # Safely extract and inject exceptions tracebacks if execution scope failed
         if record.exc_info:
             log_payload["exception"] = self.formatException(record.exc_info)
 
-        # Inject extra dynamic attributes if attached to log invocation dict
         if hasattr(record, "extra_metadata"):
             log_payload["metadata"] = record.extra_metadata
 
@@ -43,11 +40,9 @@ def setup_logging(service_name: str):
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # Clean existing default handlers to avoid message duplication issues
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
-    # Channel 1: High-performance Human-Readable Console Stream
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
     console_formatter = logging.Formatter(
@@ -57,7 +52,6 @@ def setup_logging(service_name: str):
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
 
-    # Channel 2: Structural Production Rotational File Engine
     try:
         os.makedirs(config.LOG_DIR, exist_ok=True)
         file_path = os.path.join(config.LOG_DIR, f"{service_name}.json.log")
@@ -73,6 +67,6 @@ def setup_logging(service_name: str):
         root_logger.addHandler(file_handler)
 
         logging.getLogger("logging_system").info(f"Persistent logging engine mapped to: {file_path}")
-    except Exception as exc:
-        # Fallback security alert vector if physical filesystem mounting layer fails
-        logging.getLogger("logging_system").error(f"Critical failure initializing physical file storage logs: {exc}")
+    except Exception:
+        # ✅ ФИКС С СОНАРОМ (python:S8572): Использование .exception() вместо сырого ручного конкатенирования лога
+        logging.getLogger("logging_system").exception("Critical failure initializing physical file storage logs")

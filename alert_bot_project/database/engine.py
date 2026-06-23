@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from alert_bot_project.core_shared.config import config
 
 # Production-grade async engine configuration targeting Supabase instance
-# ✅ УЛУЧШЕНИЕ: Добавлен строгий сетевой контроль (таймауты + принудительный SSL для облака)
+# ✅ СЕНЬОР-ФИКС: Полностью отключен кэш подготовленных выражений для совместимости с Supavisor (порт 6543)
 engine = create_async_engine(
     config.DATABASE_URL,
     pool_pre_ping=True,
@@ -12,7 +12,9 @@ engine = create_async_engine(
     connect_args={
         "timeout": 5,
         "command_timeout": 10,
-        "ssl": "require"
+        "ssl": "require",
+        "statement_cache_size": 0,           # Каноничное отключение кэша стейтментов для asyncpg
+        "prepared_statement_cache_size": 0   # Дополнительный оверрайд контроля кэша
     }
 )
 

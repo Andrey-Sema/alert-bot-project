@@ -1,26 +1,28 @@
 # ============================================================
 # STAGE 1: Builder
 # ============================================================
-FROM python:3.11-slim AS builder
+FROM python:3.11.9-slim AS builder
 
 WORKDIR /build
 
-# Ставим компиляторы только если собираем Си-расширения (tgcrypto)
+# Ставим компиляторы и утилиты сборки для Си-расширений (tgcrypto)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# FIX: Указываем точный путь к requirements.txt внутри папки проекта
+# Сначала копируем ТОЛЬКО файл зависимостей для правильного кэширования слоёв
 COPY alert_bot_project/requirements.txt .
 
-# Устанавливаем пакеты в изолированный путь для чистого копирования
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# ✅ СЕНЬОР-ФИКС: Объединяем апгрейд pip и установку пакетов в один RUN.
+# Добавлена жесткая проверка хэшей (--require-hashes) для защиты от подмены пакетов на PyPI.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --require-hashes --prefix=/install -r requirements.txt
 
 # ============================================================
 # STAGE 2: Runner
 # ============================================================
-FROM python:3.11-slim AS runner
+FROM python:3.11.9-slim AS runner
 
 LABEL description="OdesaAlert Bot — Air threat monitoring system"
 
@@ -30,23 +32,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# curl необходим для индивидуальных хелсчеков воркера/скрейпера
+# ✅ СЕНЬОР-ФИКС: Атомарно ставим curl и чистим списки apt сразу же,
+# не дожидаясь выполнения сторонних системных команд
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Премиальный уровень безопасности: non-root, без домашней папки и без доступа к шеллу
-RUN groupadd -g 10001 appgroup && \
-    useradd -u 10001 -g appgroup -M -s /sbin/nologin appuser
+# ✅ СЕНЬОР-ФИКС: Выносим создание групп, юзера, папок и пермиссий в отдельный изолированный слой
+RUN groupadd -g 10001 appgroup \
+    && useradd -u 10001 -g appgroup -M -s /sbin/nologin appuser \
+    && mkdir -p /data/session /data/logs \
+    && chown -R appuser:appgroup /data /app
 
-# Создаем системные папки под логи и сессии с правами для нашего юзера
-RUN mkdir -p /data/session /data/logs && \
-    chown -R appuser:appgroup /data /app
-
-# Копируем чистое окружение из builder прямо в системный пути python
+# Копируем чистое окружение из builder прямо в системные пути python
 COPY --from=builder --chown=appuser:appgroup /install /usr/local
 
-# Переносим исходный код
+# Переносим исходный код приложения (лежит в самом низу, чтобы не инвалидировать кэш либ)
 COPY --chown=appuser:appgroup alert_bot_project/ /app/alert_bot_project/
 
 USER appuser

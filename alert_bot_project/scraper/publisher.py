@@ -18,20 +18,15 @@ class RedisPublisher:
         """Ініціалізує з'єднання з пулом Redis Streams."""
         if not self._redis:
             self._redis = Redis.from_url(self.redis_url, decode_responses=True)
-            logger.info("🔌 Підключення до Redis Streams установлено")
+            await self._redis.ping()
+            logger.info("🔌 Підключення до Redis Streams установлено та перевірено")
 
     async def publish_message(self, json_data: str) -> str:
-        """
-        Відправляє повідомлення в персистентний Redis Stream з обмеженням довжини (maxlen=10000).
-
-        Рейзить виключення нагору, щоб викликаючий код (скрейпер) міг коректно
-        відпрацювати політику повторних спроб (exponential backoff).
-        """
+        """Відправляє повідомлення в персистентний Redis Stream з обмеженням довжини."""
         if not self._redis:
             await self.connect()
 
         try:
-            # Атомарно пишемо в стрім із захистом оперативки Редіса від переповнення
             msg_id: str = await self._redis.xadd(
                 self.stream_name,
                 {"payload": json_data},
@@ -40,16 +35,14 @@ class RedisPublisher:
             logger.info("📨 Повідомлення записано в Stream (ID: %s)", msg_id)
             return msg_id
 
-        except (ConnectionError, TimeoutError) as net_err:
-            # ✅ ФИКС 2 (Восстановление): Если линк упал, обнуляем инстанс пула,
-            # щоб наступний ретрай скрейпера примусово підняв чисте TCP-з'єднання
-            logger.error("❌ Мережевий збій транспорту Redis: %s. Скидання пулу підключень...", net_err)
+        except (ConnectionError, TimeoutError):
+            # ✅ ФИКС С СОНАРОМ (python:S8572): Использование .exception() вместо ручной передачи net_err
+            logger.exception("❌ Мережевий збій транспорту Redis. Скидання пулу підключень...")
             self._redis = None
             raise
 
-        except RedisError as redis_err:
-            # ✅ ФИКС 1 (Контракт): Больше не жрём ошибки молча. Логируем и выкидываем наверх
-            logger.error("❌ Помилка виконання команди в Redis Streams: %s", redis_err, exc_info=True)
+        except RedisError:
+            logger.exception("❌ Помилка виконання команди в Redis Streams")
             raise
 
     async def close(self) -> None:

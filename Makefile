@@ -33,7 +33,7 @@ format:
 # =========================================================================
 
 test:
-	pytest tests/test_text_processor.py tests/test_crud.py tests/test_user_service.py tests/test_middleware.py tests/test_handlers.py
+	pytest --cov=alert_bot_project --cov-report=term-missing --cov-report=html tests/
 
 integration:
 	pytest tests/test_integration_pipeline.py
