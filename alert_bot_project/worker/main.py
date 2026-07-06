@@ -9,13 +9,15 @@ import signal
 import socket
 import uuid
 from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Optional
 from zoneinfo import ZoneInfo
 
-import aiohttp
 from aiogram import Bot
+from pydantic import ValidationError
 from redis.asyncio import Redis
-from redis.exceptions import ResponseError
+from redis.exceptions import RedisError, ResponseError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from alert_bot_project.bot.keyboards.builders import build_acknowledge_keyboard
 from alert_bot_project.core_shared.config import config
@@ -29,6 +31,7 @@ from alert_bot_project.core_shared.text_processor import TextProcessor
 from alert_bot_project.database.crud import get_users_by_trigger_and_category
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserTrigger
+from alert_bot_project.services.ukrainealarm import AlarmStatePoller
 from alert_bot_project.worker.broadcaster import Broadcaster
 
 setup_logging("worker")
@@ -47,6 +50,7 @@ NIGHT_END = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
 
 REDIS_CUSTOM_TRIGGERS_KEY = "global_custom_triggers"
 REDIS_NEW_TRIGGERS_KEY = "global_custom_triggers:new"
+OFFICIAL_ALARM_KEY = "official_alarm_status:odesa"
 
 shutdown_event = asyncio.Event()
 
@@ -58,29 +62,54 @@ else
 end
 """
 
-release_lock_script = None
+# Тип скрипта звільнення розподіленого локу. Передається явно через параметри
+# функцій замість мутабельного module-level глобального стану, який раніше
+# ініціалізувався як None і перезаписувався лише всередині main() — статичний
+# аналізатор (і потенційно виклик до старту main()) міг побачити None замість
+# справжнього скрипта ("release_lock_script is not callable").
+ReleaseLockScript = Callable[..., Awaitable[Any]]
 
 
 class CustomTriggerMatcher:
-    def __init__(self):
-        self.cache = {}
+    """
+    Тримає ОДИН прекомпільований regex на весь глобальний пул кастомних фраз
+    замість окремого re.compile на кожну фразу. Знижує вартість перевірки
+    одного повідомлення з O(N окремих .search()) до одного проходу regex-двигуна —
+    критично при рості пулу фраз (anti-DoS).
+    """
+
+    def __init__(self) -> None:
+        self._pattern: Optional[re.Pattern[str]] = None
+        self._phrases_by_group: dict[str, str] = {}
         self.last_hash = ""
         self._lock = asyncio.Lock()
 
-    async def get_matches(self, normalized_text: str, global_custom: set) -> list:
+    async def get_matches(self, normalized_text: str, global_custom: set[str]) -> list[str]:
         if not global_custom:
             return []
 
         async with self._lock:
-            current_hash = hashlib.md5("".join(sorted(global_custom)).encode()).hexdigest()
+            # noinspection PyTypeChecker
+            current_hash = hashlib.md5(
+                "".join(sorted(global_custom)).encode(), usedforsecurity=False
+            ).hexdigest()
             if current_hash != self.last_hash:
-                self.cache = {
-                    str(t): re.compile(rf"{_WORD_BOUNDARY}{re.escape(str(t))}\w{{0,3}}{_WORD_BOUNDARY_END}")
-                    for t in global_custom
-                }
+                self._phrases_by_group = {f"g{i}": str(t) for i, t in enumerate(global_custom)}
+                alternation = "|".join(
+                    f"(?P<{group}>{re.escape(phrase)}\\w{{0,3}})"
+                    for group, phrase in self._phrases_by_group.items()
+                )
+                self._pattern = re.compile(rf"{_WORD_BOUNDARY}(?:{alternation}){_WORD_BOUNDARY_END}")
                 self.last_hash = current_hash
 
-            return [t for t, pattern in self.cache.items() if pattern.search(normalized_text)]
+            if not self._pattern:
+                return []
+
+            matches: set[str] = set()
+            for m in self._pattern.finditer(normalized_text):
+                if m.lastgroup:
+                    matches.add(self._phrases_by_group[m.lastgroup])
+            return list(matches)
 
 
 trigger_matcher = CustomTriggerMatcher()
@@ -94,37 +123,43 @@ def is_night_siren_interval_active() -> bool:
 
 
 async def check_official_air_alarm(redis_client: Redis) -> bool:
-    cache_key = "official_alarm_status:odesa"
+    """
+    Читає стан офіційної тривоги, який пише фоновий AlarmStatePoller
+    (services.ukrainealarm.AlarmStatePoller). Ключ має TTL: якщо поллер
+    впав і ключ протух, використовуємо fail-open/fail-close режим за
+    конфігом OFFICIAL_ALARM_FAILSAFE.
+    """
     try:
-        cached = await redis_client.get(cache_key)
+        cached = await redis_client.get(OFFICIAL_ALARM_KEY)
         if cached is not None:
             return cached == "1"
-
-        alarm_active = getattr(config, 'FORCE_ALARM_MODE', True)
-        await redis_client.setex(cache_key, 10, "1" if alarm_active else "0")
-        return alarm_active
-    except Exception:
-        logger.exception("Ошибка при запросе к официальному API")
-        return True
+        return config.OFFICIAL_ALARM_FAILSAFE
+    except RedisError:
+        logger.exception("Ошибка при чтении статуса официальной тревоги из Redis")
+        return config.OFFICIAL_ALARM_FAILSAFE
 
 
-async def cleanup_dead_consumers(redis_client: Redis):
+async def _remove_dead_consumer(redis_client: Redis, consumer_name: str) -> None:
+    try:
+        await redis_client.xgroup_delconsumer(STREAM_NAME, GROUP_NAME, consumer_name)
+        logger.info("Removed dead ghost consumer metadata from Redis: %s", consumer_name)
+    except RedisError:
+        logger.exception("Failed to delete specific consumer %s", consumer_name)
+
+
+async def cleanup_dead_consumers(redis_client: Redis) -> None:
     try:
         if not await redis_client.exists(STREAM_NAME):
             return
         consumers = await redis_client.xinfo_consumers(STREAM_NAME, GROUP_NAME)
         for c in consumers:
             if c.get("pending") == 0 and c.get("idle", 0) > 86400000:
-                try:
-                    await redis_client.xgroup_delconsumer(STREAM_NAME, GROUP_NAME, c["name"])
-                    logger.info("Removed dead ghost consumer metadata from Redis: %s", c["name"])
-                except Exception:
-                    logger.exception("Failed to delete specific consumer %s", c["name"])
-    except Exception:
+                await _remove_dead_consumer(redis_client, c["name"])
+    except RedisError:
         logger.exception("General failure during dead consumers cleanup sweep")
 
 
-async def sync_global_custom_triggers(redis_client: Redis):
+async def sync_global_custom_triggers(redis_client: Redis) -> None:
     from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS
 
     all_static = list(ODESA_LOCS.keys()) + list(OUTSIDE_LOCS.keys())
@@ -133,30 +168,36 @@ async def sync_global_custom_triggers(redis_client: Redis):
         res = await session.execute(stmt)
         triggers = res.scalars().all()
 
-        pipe = redis_client.pipeline()
-        if triggers:
-            pipe.delete(REDIS_NEW_TRIGGERS_KEY)
-            pipe.sadd(REDIS_NEW_TRIGGERS_KEY, *triggers)
-            pipe.rename(REDIS_NEW_TRIGGERS_KEY, REDIS_CUSTOM_TRIGGERS_KEY)
-            await pipe.execute()
-            logger.info("Synchronized %d global custom triggers via Pipeline.", len(triggers))
-        else:
+        if not triggers:
             await redis_client.delete(REDIS_CUSTOM_TRIGGERS_KEY)
+            return
+
+        # redis.asyncio Pipeline-команди — це корутини, їх ОБОВ'ЯЗКОВО треба await-ити
+        # навіть у буферизованому режимі. Без await вони ніколи не потрапляють у
+        # command_stack, і pipe.execute() виконує 0 команд — раніше delete/sadd/rename
+        # викликались без await і мовчки нічого не робили (глобальний пул кастомних
+        # фраз ніколи не перебудовувався при старті воркера).
+        pipe = redis_client.pipeline()
+        pipe.delete(REDIS_NEW_TRIGGERS_KEY)
+        pipe.sadd(REDIS_NEW_TRIGGERS_KEY, *triggers)
+        pipe.rename(REDIS_NEW_TRIGGERS_KEY, REDIS_CUSTOM_TRIGGERS_KEY)
+        await pipe.execute()
+        logger.info("Synchronized %d global custom triggers via Pipeline.", len(triggers))
 
 
-async def init_redis_consumer_group(redis_client: Redis):
+async def init_redis_consumer_group(redis_client: Redis) -> None:
     try:
         if await redis_client.exists(STREAM_NAME):
             groups = await redis_client.xinfo_groups(STREAM_NAME)
-            if any(g['name'] == GROUP_NAME for g in groups):
+            if any(g["name"] == GROUP_NAME for g in groups):
                 return
         await redis_client.xgroup_create(name=STREAM_NAME, groupname=GROUP_NAME, id="$", mkstream=True)
     except ResponseError as e:
         if "BUSYGROUP" not in str(e):
-            raise e
+            raise
 
 
-async def monitor_dlq_backlog(redis_client: Redis):
+async def monitor_dlq_backlog(redis_client: Redis) -> None:
     while not shutdown_event.is_set():
         try:
             if await redis_client.exists("dead_letter_queue"):
@@ -164,21 +205,259 @@ async def monitor_dlq_backlog(redis_client: Redis):
                 DLQ_SIZE.set(dlq_depth)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except RedisError:
             logger.exception("Error checking DLQ depth")
 
         try:
-            # ✅ ФИКС С СОНАРОМ (python:S7484): Умное событие ожидания вместо тупого sleep(60)
             await asyncio.wait_for(shutdown_event.wait(), timeout=60.0)
         except asyncio.TimeoutError:
             pass
 
 
-async def auto_claim_pending_tasks(redis_client: Redis, broadcaster: Broadcaster):
+# =========================================================================
+#  РЕЗОЛВІНГ ОДЕРЖУВАЧІВ (декомпозовано з єдиної функції складністю 51 -> дрібні шматки)
+# =========================================================================
+
+async def _try_get_cached_targets(redis_client: Redis, cache_hash_key: str) -> Optional[list[int]]:
+    cached = await redis_client.get(cache_hash_key)
+    if cached:
+        return json.loads(cached)
+    return None
+
+
+async def _acquire_cache_build_lock(redis_client: Redis, lock_key: str, lock_token: str) -> bool:
+    return bool(await redis_client.set(lock_key, lock_token, ex=4, nx=True))
+
+
+async def _fetch_targets_from_db(categories: set[str], trigger_words: set[str]) -> list[int]:
+    async with AsyncSessionLocal() as session:
+        target_users = await get_users_by_trigger_and_category(
+            session=session, category_names=categories, trigger_words=trigger_words
+        )
+        return [u.user_id for u in target_users]
+
+
+async def _handle_db_failure(
+    redis_client: Redis, redis_msg_id: str, raw_json: str, db_err: Exception
+) -> None:
+    """Рахує ретраї конкретного повідомлення і зносить його в DLQ після 5 невдалих спроб."""
+    retry_key = f"retry_count:{redis_msg_id}"
+    current_retries = await redis_client.incr(retry_key)
+    await redis_client.expire(retry_key, 3600)
+
+    if current_retries > 5:
+        logger.error("Task message ID %s dropped to DLQ.", redis_msg_id)
+        await redis_client.xadd("dead_letter_queue", {"payload": raw_json, "error": str(db_err)}, maxlen=10000)
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        await redis_client.delete(retry_key)
+
+
+async def _build_and_cache_targets(
+    redis_client: Redis,
+    cache_hash_key: str,
+    lock_key: str,
+    lock_token: str,
+    categories: set[str],
+    trigger_words: set[str],
+    redis_msg_id: str,
+    raw_json: str,
+    release_lock_script: ReleaseLockScript,
+) -> list[int]:
+    try:
+        user_ids_list = await _fetch_targets_from_db(categories, trigger_words)
+        await redis_client.setex(cache_hash_key, 5, json.dumps(user_ids_list))
+        return user_ids_list
+    except SQLAlchemyError as db_err:
+        await _handle_db_failure(redis_client, redis_msg_id, raw_json, db_err)
+        raise
+    finally:
+        await release_lock_script(keys=[lock_key], args=[lock_token])
+
+
+async def _resolve_target_users(
+    redis_client: Redis,
+    checksum: str,
+    categories: set[str],
+    trigger_words: set[str],
+    redis_msg_id: str,
+    raw_json: str,
+    release_lock_script: ReleaseLockScript,
+) -> list[int]:
+    """
+    Резолвить список user_id-отримувачів для конкретної комбінації категорій/тригерів,
+    з коротким Redis-кешем (5с) під розподіленим локом, щоб уникнути дублюючих
+    важких SELECT-ів у БД при сплеску однакових повідомлень.
+    """
+    cache_hash_key = f"cache:alert_targets:{checksum}"
+    lock_key = f"lock:cache_build:{checksum}"
+    lock_token = str(uuid.uuid4())
+
+    for _ in range(15):
+        cached_targets = await _try_get_cached_targets(redis_client, cache_hash_key)
+        if cached_targets is not None:
+            return cached_targets
+
+        if await _acquire_cache_build_lock(redis_client, lock_key, lock_token):
+            return await _build_and_cache_targets(
+                redis_client, cache_hash_key, lock_key, lock_token,
+                categories, trigger_words, redis_msg_id, raw_json, release_lock_script,
+            )
+
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=0.1)
+        except asyncio.TimeoutError:
+            pass
+
+    # Ліміт спроб вичерпано, ніхто так і не звільнив лок вчасно —
+    # читаємо з БД напряму без кешування (як і в початковій реалізації).
+    return await _fetch_targets_from_db(categories, trigger_words)
+
+
+# =========================================================================
+#  ОБРОБКА ОДНОГО ПОВІДОМЛЕННЯ (декомпозовано з складністю 51 -> дрібні шматки)
+# =========================================================================
+
+async def _validate_payload(
+    redis_client: Redis, redis_msg_id: str, raw_json: str
+) -> Optional[AlertMessage]:
+    try:
+        alert_data = AlertMessage.model_validate_json(raw_json)
+    except (ValidationError, ValueError):
+        logger.exception("Dropped corrupted payload")
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        return None
+
+    if (datetime.now(timezone.utc) - alert_data.timestamp).total_seconds() > 600:
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        return None
+
+    return alert_data
+
+
+async def _acquire_dedup_lock(redis_client: Redis, alert_data: AlertMessage) -> Optional[str]:
+    """Повертає ключ дедуплікації, якщо повідомлення ще не оброблялося, інакше None."""
+    dedup_key = f"processed_msg:{alert_data.chat_id}:{alert_data.message_id}"
+    acquired = await redis_client.set(dedup_key, "1", ex=600, nx=True)
+    return dedup_key if acquired else None
+
+
+def _resolve_trigger_words(
+    analysis: dict[str, set[str]], matched_custom: list[str], official_alarm_active: bool
+) -> Optional[set[str]]:
+    """
+    Вирішує, чи повідомлення варте розсилки, і повертає фінальний набір
+    trigger_words для пошуку одержувачів, або None — якщо розсилку треба
+    пропустити. Порядок перевірок ідентичний початковій реалізації воркера.
+
+    Правила:
+      * Без офіційної тривоги: потрібна і категорія загрози, І (локація або кастом-фраза).
+      * З офіційною тривогою: локації/кастом-фрази достатньо самої по собі;
+        якщо їх немає, але є розпізнана категорія загрози — ескалюємо на
+        загальноміських підписників (ключ "city").
+    """
+    if not official_alarm_active and (
+        not analysis["categories"] or (not analysis["locations"] and not matched_custom)
+    ):
+        return None
+
+    if official_alarm_active and not analysis["locations"] and not matched_custom:
+        if analysis["categories"]:
+            return {"city"}
+        return None
+
+    trigger_words = set(analysis["locations"])
+    if matched_custom:
+        trigger_words.update(matched_custom)
+    return trigger_words
+
+
+async def _filter_muted_users(redis_client: Redis, user_ids: list[int]) -> list[int]:
+    mute_keys = [f"user_mute:{u}" for u in user_ids]
+    mutes = await redis_client.mget(mute_keys)
+    return [u for u, m in zip(user_ids, mutes) if not m]
+
+
+def _dispatch_alerts(broadcaster: Broadcaster, active_users: list[int]) -> None:
+    alert_markup = build_acknowledge_keyboard()
+    for u_id in active_users:
+        broadcaster.fire_and_forget_message(u_id, ALERT_FIRST, reply_markup=alert_markup, disable_notification=False)
+        broadcaster.schedule_delayed_alerts(u_id, disable_notification=False)
+
+
+async def process_single_stream_payload(
+    redis_msg_id: str,
+    raw_json: str,
+    redis_client: Redis,
+    broadcaster: Broadcaster,
+    release_lock_script: ReleaseLockScript,
+) -> None:
+    alert_data = await _validate_payload(redis_client, redis_msg_id, raw_json)
+    if alert_data is None:
+        return
+
+    dedup_key = await _acquire_dedup_lock(redis_client, alert_data)
+    if dedup_key is None:
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        return
+
+    with PROCESSING_TIME.time():
+        analysis = TextProcessor.parse_message(alert_data.raw_text)
+        normalized_text = TextProcessor.normalize(alert_data.raw_text)
+
+        global_custom = await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY)
+        matched_custom = await trigger_matcher.get_matches(normalized_text, global_custom)
+        official_alarm_active = await check_official_air_alarm(redis_client)
+
+        trigger_words = _resolve_trigger_words(analysis, matched_custom, official_alarm_active)
+        if trigger_words is None:
+            await redis_client.delete(dedup_key)
+            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+            return
+
+        if not analysis["categories"]:
+            analysis["categories"] = {"Мопеди", "Ракети"}
+
+        sorted_cats = sorted(analysis["categories"])
+        sorted_triggers = sorted(trigger_words)
+        # noinspection PyTypeChecker
+        checksum = hashlib.md5(
+            f"cats:{sorted_cats}|triggers:{sorted_triggers}".encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
+
+        try:
+            user_ids_list = await _resolve_target_users(
+                redis_client, checksum, analysis["categories"], trigger_words,
+                redis_msg_id, raw_json, release_lock_script,
+            )
+        except SQLAlchemyError:
+            await redis_client.delete(dedup_key)
+            return
+
+        if not user_ids_list:
+            await redis_client.delete(dedup_key)
+            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+            return
+
+        active_users = await _filter_muted_users(redis_client, user_ids_list)
+        if not active_users or not is_night_siren_interval_active():
+            await redis_client.delete(dedup_key)
+            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+            return
+
+        _dispatch_alerts(broadcaster, active_users)
+
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        await redis_client.delete(f"retry_count:{redis_msg_id}")
+
+    ALERTS_PROCESSED.inc()
+
+
+async def auto_claim_pending_tasks(
+    redis_client: Redis, broadcaster: Broadcaster, release_lock_script: ReleaseLockScript
+) -> None:
     next_start_id = "0-0"
     while not shutdown_event.is_set():
         try:
-            # ✅ ФИКС С СОНАРОМ (python:S7484): wait_for на ивенте
             try:
                 await asyncio.wait_for(shutdown_event.wait(), timeout=30 + random.uniform(0.0, 10.0))
             except asyncio.TimeoutError:
@@ -194,184 +473,27 @@ async def auto_claim_pending_tasks(redis_client: Redis, broadcaster: Broadcaster
                     for msg_id, payload in res[1]:
                         raw_json = payload.get("payload")
                         if raw_json:
-                            await process_single_stream_payload(msg_id, raw_json, redis_client, broadcaster)
+                            await process_single_stream_payload(
+                                msg_id, raw_json, redis_client, broadcaster, release_lock_script
+                            )
                         else:
                             await redis_client.xack(STREAM_NAME, GROUP_NAME, msg_id)
         except asyncio.CancelledError:
             raise
         except Exception:
+            # Верхньорівневий демон-цикл навмисно ловить будь-яку помилку:
+            # одиничний збій ітерації не повинен вбивати відновлення "завислих" повідомлень.
             logger.exception("XAUTOCLAIM tracking loop error")
 
 
-async def _resolve_target_users(redis_client: Redis, checksum: str, categories: set, trigger_words: set, redis_msg_id: str, raw_json: str) -> list:
-    """✅ СЕНЬОР-ФИКС: Распил сложности (Cognitive Complexity). Слой распределенной блокировки и работы с СУБД."""
-    cache_hash_key = f"cache:alert_targets:{checksum}"
-    lock_key = f"lock:cache_build:{checksum}"
-    lock_token = str(uuid.uuid4())
-    lock_acquired = False
+# =========================================================================
+#  ГОЛОВНИЙ ЦИКЛ (декомпозовано з складністю 22 -> дрібні шматки)
+# =========================================================================
 
-    for _ in range(15):
-        cached_targets = await redis_client.get(cache_hash_key)
-        if cached_targets:
-            return json.loads(cached_targets)
-
-        if await redis_client.set(lock_key, lock_token, ex=4, nx=True):
-            lock_acquired = True
-            break
-        try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=0.1)
-        except asyncio.TimeoutError:
-            pass
-
-    if lock_acquired:
-        try:
-            async with AsyncSessionLocal() as session:
-                target_users = await get_users_by_trigger_and_category(
-                    session=session, category_names=categories, trigger_words=trigger_words
-                )
-                user_ids_list = [u.user_id for u in target_users]
-                await redis_client.setex(cache_hash_key, 5, json.dumps(user_ids_list))
-                return user_ids_list
-        except Exception as db_err:
-            retry_key = f"retry_count:{redis_msg_id}"
-            current_retries = await redis_client.incr(retry_key)
-            await redis_client.expire(retry_key, 3600)
-
-            if current_retries > 5:
-                logger.error("Task message ID %s dropped to DLQ.", redis_msg_id)
-                await redis_client.xadd("dead_letter_queue", {"payload": raw_json, "error": str(db_err)}, maxlen=10000)
-                await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-                await redis_client.delete(retry_key)
-            raise
-        finally:
-            await release_lock_script(keys=[lock_key], args=[lock_token])
-
-    async with AsyncSessionLocal() as session:
-        target_users = await get_users_by_trigger_and_category(
-            session=session, category_names=categories, trigger_words=trigger_words
-        )
-        return [u.user_id for u in target_users]
-
-
-async def process_single_stream_payload(redis_msg_id: str, raw_json: str, redis_client: Redis,
-                                        broadcaster: Broadcaster):
-    try:
-        alert_data = AlertMessage.model_validate_json(raw_json)
-    except Exception:
-        logger.exception("Dropped corrupted payload")
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-        return
-
-    if (datetime.now(timezone.utc) - alert_data.timestamp).total_seconds() > 600:
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-        return
-
-    dedup_key = f"processed_msg:{alert_data.chat_id}:{alert_data.message_id}"
-    acquired = await redis_client.set(dedup_key, "1", ex=600, nx=True)
-
-    if not acquired:
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-        return
-
-    with PROCESSING_TIME.time():
-        analysis = TextProcessor.parse_message(alert_data.raw_text)
-        normalized_text = TextProcessor.normalize(alert_data.raw_text)
-
-        global_custom = await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY)
-        matched_custom = await trigger_matcher.get_matches(normalized_text, global_custom)
-
-        official_alarm_active = await check_official_air_alarm(redis_client)
-
-        if not official_alarm_active and (not analysis["categories"] or (not analysis["locations"] and not matched_custom)):
-            await redis_client.delete(dedup_key)
-            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-            return
-        elif official_alarm_active and not analysis["locations"] and not matched_custom:
-            await redis_client.delete(dedup_key)
-            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-            return
-
-        if not analysis["categories"]:
-            analysis["categories"] = {"Мопеди", "Ракети"}
-
-        trigger_words = set(analysis["locations"])
-        if matched_custom:
-            trigger_words.update(matched_custom)
-
-        # ✅ ФИКС С СОНАРОМ (python:S7508): Убраны redundant приведения к list() внутри sorted()
-        sorted_cats = sorted(analysis["categories"])
-        sorted_triggers = sorted(trigger_words)
-
-        hash_payload = f"cats:{sorted_cats}|triggers:{sorted_triggers}"
-        checksum = hashlib.md5(hash_payload.encode("utf-8")).hexdigest()
-
-        try:
-            user_ids_list = await _resolve_target_users(
-                redis_client, checksum, analysis["categories"], trigger_words, redis_msg_id, raw_json
-            )
-        except Exception:
-            await redis_client.delete(dedup_key)
-            return
-
-        if not user_ids_list:
-            await redis_client.delete(dedup_key)
-            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-            return
-
-        mute_keys = [f"user_mute:{u}" for u in user_ids_list]
-        mutes = await redis_client.mget(mute_keys)
-        active_users = [u for u, m in zip(user_ids_list, mutes) if not m]
-
-        if not active_users or not is_night_siren_interval_active():
-            await redis_client.delete(dedup_key)
-            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-            return
-
-        alert_markup = build_acknowledge_keyboard()
-        display_text = ALERT_FIRST
-
-        for u_id in active_users:
-            broadcaster.fire_and_forget_message(u_id, display_text, reply_markup=alert_markup, disable_notification=False)
-            broadcaster.schedule_delayed_alerts(u_id, disable_notification=False)
-
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-        await redis_client.delete(f"retry_count:{redis_msg_id}")
-
-    ALERTS_PROCESSED.inc()
-
-
-async def main():
-    logger.info("Production background alert stream analysis subsystem initialization...")
-    start_metrics_server(config.METRICS_PORT_WORKER)
-
-    bot = Bot(token=config.BOT_TOKEN)
-    redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
-
-    global release_lock_script
-    release_lock_script = redis_client.register_script(RELEASE_LOCK_LUA)
-
-    await init_redis_consumer_group(redis_client)
-    await cleanup_dead_consumers(redis_client)
-    await sync_global_custom_triggers(redis_client)
-
-    broadcaster = Broadcaster(bot, redis_client)
-    broadcaster.start()
-
-    delayed_daemon = asyncio.create_task(broadcaster.process_delayed_alerts())
-    recovery_daemon = asyncio.create_task(auto_claim_pending_tasks(redis_client, broadcaster))
-    dlq_daemon = asyncio.create_task(monitor_dlq_backlog(redis_client))
-
-    def _signal_handler():
-        logger.info("Shutdown signal received.")
-        shutdown_event.set()
-
-    try:
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _signal_handler)
-    except NotImplementedError:
-        pass
-
+async def _drain_pending_backlog(
+    redis_client: Redis, broadcaster: Broadcaster, release_lock_script: ReleaseLockScript
+) -> None:
+    """Одноразово вичитує весь PEL (Pending Entries List) цього консюмера при старті."""
     logger.info("Draining outstanding internal consumer PEL backlogs completely...")
     while True:
         try:
@@ -382,47 +504,63 @@ async def main():
             if not backlog_data or not backlog_data[0][1]:
                 break
 
-            for stream, messages in backlog_data:
+            for _stream, messages in backlog_data:
                 for redis_msg_id, payload in messages:
                     raw_json = payload.get("payload")
                     if raw_json:
-                        await process_single_stream_payload(redis_msg_id, raw_json, redis_client, broadcaster)
+                        await process_single_stream_payload(
+                            redis_msg_id, raw_json, redis_client, broadcaster, release_lock_script
+                        )
                     else:
                         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         except Exception:
             logger.exception("Error during initial PEL drainage sweep")
             break
 
+
+async def _handle_stream_response_error(redis_client: Redis, error: ResponseError) -> None:
+    if "NOGROUP" in str(error):
+        logger.warning("Consumer group missing. Re-initializing...")
+        await init_redis_consumer_group(redis_client)
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+    else:
+        WORKER_ERRORS.inc()
+        logger.exception("Core engine execution loop ResponseError")
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _consume_loop(
+    redis_client: Redis, broadcaster: Broadcaster, release_lock_script: ReleaseLockScript
+) -> None:
+    """Основний нескінченний цикл читання нових повідомлень зі стріму (">")."""
     while not shutdown_event.is_set():
         try:
-            streams_data = await redis_client.xreadgroup(groupname=GROUP_NAME, consumername=CONSUMER_NAME,
-                                                         streams={STREAM_NAME: ">"}, count=5, block=1000)
+            streams_data = await redis_client.xreadgroup(
+                groupname=GROUP_NAME, consumername=CONSUMER_NAME,
+                streams={STREAM_NAME: ">"}, count=5, block=1000
+            )
             if not streams_data:
                 continue
-            for stream, messages in streams_data:
+            for _stream, messages in streams_data:
                 for redis_msg_id, payload in messages:
                     raw_json = payload.get("payload")
                     if raw_json:
-                        await process_single_stream_payload(redis_msg_id, raw_json, redis_client, broadcaster)
+                        await process_single_stream_payload(
+                            redis_msg_id, raw_json, redis_client, broadcaster, release_lock_script
+                        )
                     else:
                         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         except ResponseError as e:
-            if "NOGROUP" in str(e):
-                logger.warning("Consumer group missing. Re-initializing...")
-                await init_redis_consumer_group(redis_client)
-                try:
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                WORKER_ERRORS.inc()
-                logger.exception("Core engine execution loop ResponseError")
-                try:
-                    # ✅ ФИКС С СОНАРОМ (python:S7484): wait_for на ивенте при сбоях брокера вместо тупого сна
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    pass
+            await _handle_stream_response_error(redis_client, e)
         except Exception:
+            # Верхньорівневий цикл споживання навмисно ловить будь-яку помилку:
+            # одиничний збій ітерації не повинен вбивати весь воркер-процес.
             WORKER_ERRORS.inc()
             logger.exception("Core engine execution loop error")
             try:
@@ -430,17 +568,60 @@ async def main():
             except asyncio.TimeoutError:
                 pass
 
+
+async def main() -> None:
+    logger.info("Production background alert stream analysis subsystem initialization...")
+    start_metrics_server(config.METRICS_PORT_WORKER)
+
+    bot = Bot(token=config.BOT_TOKEN)
+    redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
+
+    release_lock_script: ReleaseLockScript = redis_client.register_script(RELEASE_LOCK_LUA)
+
+    await init_redis_consumer_group(redis_client)
+    await cleanup_dead_consumers(redis_client)
+    await sync_global_custom_triggers(redis_client)
+
+    broadcaster = Broadcaster(bot, redis_client)
+    broadcaster.start()
+
+    delayed_daemon = asyncio.create_task(broadcaster.process_delayed_alerts())
+    recovery_daemon = asyncio.create_task(
+        auto_claim_pending_tasks(redis_client, broadcaster, release_lock_script)
+    )
+    dlq_daemon = asyncio.create_task(monitor_dlq_backlog(redis_client))
+
+    alarm_poller = AlarmStatePoller(redis_client)
+    alarm_daemon = asyncio.create_task(alarm_poller.run(shutdown_event))
+
+    def _signal_handler(*_args: object) -> None:
+        logger.info("Shutdown signal received.")
+        shutdown_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+    except NotImplementedError:
+        pass
+
+    await _drain_pending_backlog(redis_client, broadcaster, release_lock_script)
+    await _consume_loop(redis_client, broadcaster, release_lock_script)
+
     logger.info("Draining background tasks...")
     delayed_daemon.cancel()
     recovery_daemon.cancel()
     dlq_daemon.cancel()
+    alarm_daemon.cancel()
 
-    await asyncio.gather(delayed_daemon, recovery_daemon, dlq_daemon, return_exceptions=True)
+    await asyncio.gather(
+        delayed_daemon, recovery_daemon, dlq_daemon, alarm_daemon, return_exceptions=True
+    )
     await broadcaster.close()
 
     try:
         await redis_client.xgroup_delconsumer(STREAM_NAME, GROUP_NAME, CONSUMER_NAME)
-    except Exception:
+    except RedisError:
         pass
 
     await redis_client.close()

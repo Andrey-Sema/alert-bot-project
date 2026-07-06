@@ -6,6 +6,8 @@ from alert_bot_project.bot.handlers import start, settings
 from alert_bot_project.bot.middlewares.db import DatabaseMiddleware
 from alert_bot_project.core_shared.metrics import start_metrics_server
 from alert_bot_project.core_shared.config import config
+from alert_bot_project.bot.middlewares.throttling import ThrottlingMiddleware
+
 
 setup_logging("tg_bot_ui")
 logger = logging.getLogger("bot.main")
@@ -18,6 +20,7 @@ async def main():
     start_metrics_server(config.METRICS_PORT_BOT)
 
     logger.info("Configuring global update middlewares and registering routers...")
+    dp.update.middleware(ThrottlingMiddleware(redis_client, rate_limit=0.5))
     dp.update.middleware(DatabaseMiddleware())
 
     dp.include_router(start.router)

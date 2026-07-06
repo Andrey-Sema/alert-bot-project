@@ -9,7 +9,7 @@ class AlertMessage(BaseModel):
     chat_id: int = Field(..., description="Source channel ID")
 
     # Защита воркера от High-Load спама и переполнения буфера памяти
-    raw_text: str = Field(..., max_length=4000, description="Raw text message content")
+    raw_text: str = Field(..., max_length=4096, description="Raw text message content")
 
     # Гарантирует генерацию корректного UTC-времени строго в момент создания инстанса
     timestamp: datetime = Field(

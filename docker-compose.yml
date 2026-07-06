@@ -22,16 +22,18 @@ services:
   # ИНФРАСТРУКТУРНЫЙ СЛОЙ (БРОКЕР И СУБД МЕДЖЕРЫ)
   # =========================================================================
 
+  # FILE: docker-compose.yml
+
   redis:
     image: redis:7.2-alpine
     container_name: odesa_alert_redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is strictly required in .env}
     volumes:
       - redis_data:/data
-    # ✅ ФИКС: Встроенный хелсчек, гарантирующий реальную готовность памяти брокера
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # БЫЛО: test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 3
@@ -44,6 +46,7 @@ services:
     restart: unless-stopped
     environment:
       - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     # Начинаем скрейпить метрики только тогда, когда сам Редис ответил на PING
     depends_on:
       redis:

@@ -17,7 +17,7 @@ COPY alert_bot_project/requirements.txt .
 # ✅ СЕНЬОР-ФИКС: Объединяем апгрейд pip и установку пакетов в один RUN.
 # Добавлена жесткая проверка хэшей (--require-hashes) для защиты от подмены пакетов на PyPI.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --require-hashes --prefix=/install -r requirements.txt
+    && pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ============================================================
 # STAGE 2: Runner

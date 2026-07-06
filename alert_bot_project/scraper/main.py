@@ -49,11 +49,15 @@ async def handle_channel_post(client: Client, message: Message):
     logger.info("Captured raw source payload feed ID: %s", message.id)
     SCRAPER_MESSAGES.inc()
 
-    alert_payload = AlertMessage(
-        message_id=message.id,
-        chat_id=message.chat.id,
-        raw_text=raw_text
-    )
+    try:
+        alert_payload = AlertMessage(
+            message_id=message.id,
+            chat_id=message.chat.id,
+            raw_text=raw_text
+        )
+    except Exception:
+        logger.exception("Payload validation failed for message ID: %s, skipping", message.id)
+        return
 
     # ✅ ФИКС 2: Выносим нативную сериализацию Pydantic v2 за пределы цикла ретраев.
     # JSON генерируется ровно один раз, разгружая CPU при повторных попытках отправки.

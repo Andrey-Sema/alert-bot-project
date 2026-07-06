@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     NIGHT_START_HOUR: int = Field(22, ge=0, le=23, description="Start hour for quiet hours/night mode status")
     NIGHT_END_HOUR: int = Field(7, ge=0, le=23, description="End hour for quiet hours/night mode status")
 
+    UKRAINEALARM_API_KEY: str = Field("", description="API-ключ від api.ukrainealarm.com")
+    UKRAINEALARM_REGION_ID: str | None = Field(
+        None, description="ID Одеської області; якщо None — резолвиться автоматично за назвою"
+    )
+    OFFICIAL_ALARM_FAILSAFE: bool = Field(
+        True, description="Стан офіційної тривоги, коли API недоступне (True=fail-open, безпечніше)"
+    )
+
     # Production Logging Engine Configuration
     LOG_LEVEL: str = Field("INFO", description="Global application logging threshold level")
     LOG_DIR: str = Field("/data/logs", description="Directory where production rotational log files are persistent")

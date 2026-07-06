@@ -13,6 +13,8 @@ from alert_bot_project.database.crud import (
     update_user_potvory, update_user_mute
 )
 
+
+
 logger = logging.getLogger("services.user_service")
 
 
