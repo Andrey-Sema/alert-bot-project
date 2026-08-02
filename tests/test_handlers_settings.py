@@ -1,12 +1,21 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from aiogram.types import CallbackQuery
+
 from alert_bot_project.bot.handlers.settings import (
-    toggle_location_trigger, toggle_threat_category, process_mute_action, delete_custom_user_keyword
+    delete_custom_user_keyword,
+    process_mute_action,
+    toggle_location_trigger,
+    toggle_threat_category,
 )
-from alert_bot_project.core_shared.callbacks import LocationToggleCallback, ThreatCategoryCallback, MutePresetCallback, \
-    CustomActionCallback
+from alert_bot_project.core_shared.callbacks import (
+    CustomActionCallback,
+    LocationToggleCallback,
+    MutePresetCallback,
+    ThreatCategoryCallback,
+)
 from alert_bot_project.database.models import UserSettings
 
 
@@ -28,10 +37,10 @@ def mock_db_session() -> AsyncMock:
 
 
 class TestSettingsHandlersExtended:
-
     @pytest.mark.asyncio
-    async def test_toggle_location_trigger_unknown_key(self, mock_callback: AsyncMock,
-                                                       mock_db_session: AsyncMock) -> None:
+    async def test_toggle_location_trigger_unknown_key(
+        self, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
         callback_data = LocationToggleCallback(group="odesa", location_key="invalid_sector_xyz", page=0)
 
         await toggle_location_trigger(mock_callback, callback_data, db_session=mock_db_session)
@@ -41,8 +50,9 @@ class TestSettingsHandlersExtended:
 
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.settings.get_or_create_user")
-    async def test_toggle_threat_category_unknown_cat(self, mock_get_user: MagicMock, mock_callback: AsyncMock,
-                                                      mock_db_session: AsyncMock) -> None:
+    async def test_toggle_threat_category_unknown_cat(
+        self, mock_get_user: MagicMock, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
         callback_data = ThreatCategoryCallback(category="НЛО")
 
         await toggle_threat_category(mock_callback, callback_data, db_session=mock_db_session)
@@ -51,9 +61,9 @@ class TestSettingsHandlersExtended:
 
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.settings.get_or_create_user")
-    async def test_toggle_threat_category_success_add_and_remove(self, mock_get_user: MagicMock,
-                                                                 mock_callback: AsyncMock,
-                                                                 mock_db_session: AsyncMock) -> None:
+    async def test_toggle_threat_category_success_add_and_remove(
+        self, mock_get_user: MagicMock, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
         mock_user = UserSettings(user_id=12345, potvory=["Мопеди"])
         mock_get_user.return_value = mock_user
 
@@ -67,9 +77,9 @@ class TestSettingsHandlersExtended:
 
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.settings.UserService")
-    async def test_process_mute_action_handles_service_value_error(self, mock_service_cls: MagicMock,
-                                                                   mock_callback: AsyncMock,
-                                                                   mock_db_session: AsyncMock) -> None:
+    async def test_process_mute_action_handles_service_value_error(
+        self, mock_service_cls: MagicMock, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
         mock_service = AsyncMock()
         mock_service.apply_mute_preset.side_effect = ValueError("Кривой пресет")
         mock_service_cls.return_value = mock_service
@@ -80,8 +90,9 @@ class TestSettingsHandlersExtended:
         mock_callback.answer.assert_called_once_with("Кривой пресет", show_alert=True)
 
     @pytest.mark.asyncio
-    async def test_delete_custom_user_keyword_empty_phrase(self, mock_callback: AsyncMock,
-                                                           mock_db_session: AsyncMock) -> None:
+    async def test_delete_custom_user_keyword_empty_phrase(
+        self, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
         callback_data = CustomActionCallback(action="delete", phrase="")
         await delete_custom_user_keyword(mock_callback, callback_data, db_session=mock_db_session)
         mock_callback.answer.assert_called_once_with("Помилка: фразу не знайдено", show_alert=True)
@@ -89,8 +100,13 @@ class TestSettingsHandlersExtended:
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.settings.get_or_create_user")
     @patch("alert_bot_project.bot.handlers.settings.UserService")
-    async def test_delete_custom_user_keyword_success(self, mock_service_cls: MagicMock, mock_get_user: MagicMock,
-                                                      mock_callback: AsyncMock, mock_db_session: AsyncMock) -> None:
+    async def test_delete_custom_user_keyword_success(
+        self,
+        mock_service_cls: MagicMock,
+        mock_get_user: MagicMock,
+        mock_callback: AsyncMock,
+        mock_db_session: AsyncMock,
+    ) -> None:
         mock_service = AsyncMock()
         mock_service_cls.return_value = mock_service
 

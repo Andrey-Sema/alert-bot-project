@@ -1,15 +1,19 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
 import pytest
 from aiogram.types import InlineKeyboardMarkup
+
 from alert_bot_project.bot.keyboards.builders import (
-    build_main_menu, build_group_selection_menu, build_locations_paginated_keyboard,
-    build_threat_categories_keyboard, build_mute_options_keyboard, build_acknowledge_keyboard
+    build_acknowledge_keyboard,
+    build_group_selection_menu,
+    build_locations_paginated_keyboard,
+    build_main_menu,
+    build_mute_options_keyboard,
+    build_threat_categories_keyboard,
 )
 from alert_bot_project.core_shared.constants import ODESA_LOCS
 
 
 class TestKeyboardBuilders:
-
     def test_build_main_menu(self):
         kb = build_main_menu()
         assert isinstance(kb, InlineKeyboardMarkup)
@@ -21,18 +25,14 @@ class TestKeyboardBuilders:
         assert len(kb.inline_keyboard) == 3
         assert "nav_group:odesa:0" in kb.inline_keyboard[0][0].callback_data
 
-    @pytest.mark.parametrize("page, expected_page_in_buttons", [
-        (0, 0),
-        (-5, 0),
-        (999, 3)
-    ])
+    @pytest.mark.parametrize(("page", "expected_page_in_buttons"), [(0, 0), (-5, 0), (999, 3)])
     def test_build_locations_paginated_keyboard_bounds(self, page, expected_page_in_buttons):
         kb = build_locations_paginated_keyboard(group="odesa", active_user_triggers=set(), page=page)
         first_loc_button = kb.inline_keyboard[0][0]
         assert first_loc_button.callback_data.endswith(f":{expected_page_in_buttons}")
 
     def test_build_locations_paginated_keyboard_markers(self):
-        active_key = list(ODESA_LOCS.keys())[0]
+        active_key = next(iter(ODESA_LOCS.keys()))
         kb = build_locations_paginated_keyboard(group="odesa", active_user_triggers={active_key}, page=0)
 
         button_text = kb.inline_keyboard[0][0].text

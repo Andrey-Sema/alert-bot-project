@@ -1,11 +1,13 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+import pytest
 from redis.exceptions import ConnectionError
-from alert_bot_project.services.user_service import UserService
+
 from alert_bot_project.core_shared.constants import MAX_CUSTOM_TRIGGERS
+from alert_bot_project.services.user_service import UserService
 
 
 @pytest.fixture
@@ -24,14 +26,15 @@ def user_service(mock_session: AsyncMock, mock_redis: AsyncMock) -> UserService:
 
 
 class TestToggleLocation:
-
     @pytest.mark.asyncio
     async def test_toggle_adds_location(self, user_service: UserService) -> None:
         mock_user = MagicMock()
         mock_user.triggers_set = set()
 
-        with patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user), \
-                patch("alert_bot_project.services.user_service.add_user_trigger") as mock_add:
+        with (
+            patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
+            patch("alert_bot_project.services.user_service.add_user_trigger") as mock_add,
+        ):
             mock_add: MagicMock
 
             await user_service.toggle_location(12345, "peresyp")
@@ -42,8 +45,10 @@ class TestToggleLocation:
         mock_user = MagicMock()
         mock_user.triggers_set = {"peresyp"}
 
-        with patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user), \
-                patch("alert_bot_project.services.user_service.remove_user_trigger") as mock_remove:
+        with (
+            patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
+            patch("alert_bot_project.services.user_service.remove_user_trigger") as mock_remove,
+        ):
             mock_remove: MagicMock
 
             await user_service.toggle_location(12345, "peresyp")
@@ -51,17 +56,15 @@ class TestToggleLocation:
 
 
 class TestAddCustomTrigger:
-
     @pytest.mark.asyncio
     async def test_success_adds_to_redis(self, user_service: UserService) -> None:
         mock_user = MagicMock()
         mock_user.triggers_set = {"existing_custom"}
 
-        with patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user), \
-                patch("alert_bot_project.services.user_service.add_user_trigger",
-                      return_value=True) as mock_add_trigger:
-            mock_add_trigger: MagicMock
-
+        with (
+            patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
+            patch("alert_bot_project.services.user_service.add_user_trigger", return_value=True),
+        ):
             success, msg = await user_service.add_custom_trigger(12345, "new_phrase")
 
             assert success is True
@@ -85,22 +88,25 @@ class TestAddCustomTrigger:
         mock_user = MagicMock()
         mock_user.triggers_set = set()
 
-        with patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user), \
-                patch("alert_bot_project.services.user_service.add_user_trigger", return_value=True):
+        with (
+            patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
+            patch("alert_bot_project.services.user_service.add_user_trigger", return_value=True),
+        ):
             user_service.redis.sadd.side_effect = ConnectionError("Connection refused by Redis broker")
             with pytest.raises(ConnectionError):
                 await user_service.add_custom_trigger(12345, "аварийный_сектор")
 
 
 class TestDeleteCustomTrigger:
-
     @pytest.mark.asyncio
     async def test_delete_removes_from_redis_when_last_user(self, user_service: UserService) -> None:
         mock_user = MagicMock()
         mock_user.triggers_set = set()
 
-        with patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user), \
-                patch("alert_bot_project.services.user_service.remove_user_trigger"):
+        with (
+            patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
+            patch("alert_bot_project.services.user_service.remove_user_trigger"),
+        ):
             mock_result = MagicMock()
             mock_result.scalar.return_value = False
             user_service.session.execute.return_value = mock_result
@@ -115,8 +121,10 @@ class TestDeleteCustomTrigger:
         mock_user = MagicMock()
         mock_user.triggers_set = set()
 
-        with patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user), \
-                patch("alert_bot_project.services.user_service.remove_user_trigger"):
+        with (
+            patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
+            patch("alert_bot_project.services.user_service.remove_user_trigger"),
+        ):
             mock_result = MagicMock()
             mock_result.scalar.return_value = True
             user_service.session.execute.return_value = mock_result
@@ -126,7 +134,6 @@ class TestDeleteCustomTrigger:
 
 
 class TestApplyMutePreset:
-
     @pytest.mark.asyncio
     async def test_clear_mute_preset(self, user_service: UserService) -> None:
         with patch("alert_bot_project.services.user_service.update_user_mute") as mock_update:
@@ -152,12 +159,16 @@ class TestApplyMutePreset:
 
     @pytest.mark.asyncio
     async def test_morning_preset_calculated_before_seven_am(self, user_service: UserService) -> None:
-        before_morning_utc = datetime(2026, 6, 23, 0, 0, 0, tzinfo=timezone.utc)
+        before_morning_utc = datetime(2026, 6, 23, 0, 0, 0, tzinfo=UTC)
 
-        with patch("alert_bot_project.services.user_service.update_user_mute") as mock_update, \
-                patch("alert_bot_project.services.user_service.datetime") as mock_dt:
-            mock_dt.now.side_effect = [before_morning_utc,
-                                       datetime(2026, 6, 23, 3, 0, 0, tzinfo=ZoneInfo("Europe/Kyiv"))]
+        with (
+            patch("alert_bot_project.services.user_service.update_user_mute") as mock_update,
+            patch("alert_bot_project.services.user_service.datetime") as mock_dt,
+        ):
+            mock_dt.now.side_effect = [
+                before_morning_utc,
+                datetime(2026, 6, 23, 3, 0, 0, tzinfo=ZoneInfo("Europe/Kyiv")),
+            ]
 
             await user_service.apply_mute_preset(12345, "morning")
 
@@ -167,10 +178,12 @@ class TestApplyMutePreset:
 
     @pytest.mark.asyncio
     async def test_morning_preset_calculated_after_seven_am(self, user_service: UserService) -> None:
-        evening_utc = datetime(2026, 6, 23, 20, 0, 0, tzinfo=timezone.utc)
+        evening_utc = datetime(2026, 6, 23, 20, 0, 0, tzinfo=UTC)
 
-        with patch("alert_bot_project.services.user_service.update_user_mute") as mock_update, \
-                patch("alert_bot_project.services.user_service.datetime") as mock_dt:
+        with (
+            patch("alert_bot_project.services.user_service.update_user_mute") as mock_update,
+            patch("alert_bot_project.services.user_service.datetime") as mock_dt,
+        ):
             mock_dt.now.side_effect = [evening_utc, datetime(2026, 6, 23, 23, 0, 0, tzinfo=ZoneInfo("Europe/Kyiv"))]
 
             await user_service.apply_mute_preset(12345, "morning")
@@ -181,7 +194,6 @@ class TestApplyMutePreset:
 
 
 class TestAcknowledgeAlert:
-
     @pytest.mark.asyncio
     async def test_acknowledge_mutes_for_10_minutes(self, user_service: UserService) -> None:
         with patch("alert_bot_project.services.user_service.update_user_mute") as mock_update:

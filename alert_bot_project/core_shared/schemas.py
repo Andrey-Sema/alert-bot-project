@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -13,6 +14,5 @@ class AlertMessage(BaseModel):
 
     # Гарантирует генерацию корректного UTC-времени строго в момент создания инстанса
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        description="UTC time when the message was captured"
+        default_factory=lambda: datetime.now(UTC), description="UTC time when the message was captured"
     )

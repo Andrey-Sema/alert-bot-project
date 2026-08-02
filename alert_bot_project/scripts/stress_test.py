@@ -1,8 +1,9 @@
-import asyncio
 import argparse
-import time
+import asyncio
 import random
 import sys
+import time
+
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
@@ -20,7 +21,7 @@ RAW_TEXT_TEMPLATES = [
     "Routine update: Road maintenance works ongoing at Kotovskogo district, expect minor traffic delays.",
     "🚨 Ballistic missile threat detected from the south targeting Belgorod-Dnietsrovsky! Immediate shelter required!",
     "Shahed attack drones crossing from Chernomorka towards Tairovo municipal sector!",
-    "Official admin briefing: The regional defensive airspace layout is stable and fully operational."
+    "Official admin briefing: The regional defensive airspace layout is stable and fully operational.",
 ]
 
 STREAM_NAME = "alerts_stream"
@@ -40,9 +41,10 @@ VERIFY_POLL_INTERVAL = 2.0
 #  ПОДКЛЮЧЕНИЕ
 # ============================================================
 
+
 async def build_redis_client(redis_url: str) -> Redis:
     """Создаёт клиент Redis с явной проверкой доступности брокера."""
-    client = Redis.from_url(redis_url, decode_responses=True)
+    client: Redis = Redis.from_url(redis_url, decode_responses=True)
     try:
         await client.ping()
     except (RedisConnectionError, OSError) as exc:
@@ -59,13 +61,14 @@ async def build_redis_client(redis_url: str) -> Redis:
 #  ФАЗА 1: ИНЪЕКЦИЯ НАГРУЗКИ
 # ============================================================
 
+
 async def inject_load(
     redis_client: Redis,
     group_id: int,
     total_messages: int,
     batch_size: int,
     delay: float,
-) -> float:
+) -> int:
     """
     Закачивает total_messages сообщений в Redis Stream пакетами через pipeline.
     Возвращает скорость инъекции (сообщений/сек).
@@ -83,7 +86,7 @@ async def inject_load(
             payload = AlertMessage(
                 message_id=i + j,
                 chat_id=group_id,
-                raw_text=random.choice(RAW_TEXT_TEMPLATES),
+                raw_text=random.choice(RAW_TEXT_TEMPLATES),  # noqa: S311 # nosec B311 -- тестовые данные, не криптография
             )
             pipe.xadd(STREAM_NAME, {"payload": payload.model_dump_json()}, maxlen=10000)
 
@@ -106,6 +109,7 @@ async def inject_load(
 #  ФАЗА 2: АДАПТИВНОЕ ОЖИДАНИЕ И ВЕРИФИКАЦИЯ
 # ============================================================
 
+
 async def verify_processing(redis_client: Redis) -> tuple[int, int]:
     """
     Адаптивно ждёт, пока consumer group исчерпает pending-бэклог.
@@ -123,11 +127,7 @@ async def verify_processing(redis_client: Redis) -> tuple[int, int]:
 
         try:
             groups_info = await redis_client.xinfo_groups(STREAM_NAME)
-            pending = sum(
-                g.get("pending", 0)
-                for g in groups_info
-                if g.get("name") == GROUP_NAME
-            )
+            pending = sum(g.get("pending", 0) for g in groups_info if g.get("name") == GROUP_NAME)
         except Exception:
             pending = -1  # Стрим ещё не создан или временная ошибка
 
@@ -147,11 +147,7 @@ async def verify_processing(redis_client: Redis) -> tuple[int, int]:
 
     try:
         groups_info = await redis_client.xinfo_groups(STREAM_NAME)
-        pending_backlog = sum(
-            g.get("pending", 0)
-            for g in groups_info
-            if g.get("name") == GROUP_NAME
-        )
+        pending_backlog = sum(g.get("pending", 0) for g in groups_info if g.get("name") == GROUP_NAME)
     except Exception:
         pending_backlog = 0
 
@@ -161,6 +157,7 @@ async def verify_processing(redis_client: Redis) -> tuple[int, int]:
 # ============================================================
 #  ОТЧЁТ И CI-ВЫХОД
 # ============================================================
+
 
 def print_report(rps: int, dlq_size: int, pending_backlog: int, ci_mode: bool) -> int:
     """Печатает итоговый отчёт. Возвращает exit code (0 = ok, 1 = fail)."""
@@ -175,19 +172,13 @@ def print_report(rps: int, dlq_size: int, pending_backlog: int, ci_mode: bool) -
     failures = []
 
     if ci_mode and rps < CI_MIN_THROUGHPUT_RPS:
-        failures.append(
-            f"Throughput {rps} msg/s ниже порога {CI_MIN_THROUGHPUT_RPS} msg/s"
-        )
+        failures.append(f"Throughput {rps} msg/s ниже порога {CI_MIN_THROUGHPUT_RPS} msg/s")
 
     if dlq_size > 0:
-        failures.append(
-            f"DLQ содержит {dlq_size} задач — есть необработанные/битые сообщения"
-        )
+        failures.append(f"DLQ содержит {dlq_size} задач — есть необработанные/битые сообщения")
 
     if pending_backlog > 0:
-        failures.append(
-            f"Consumer group lag {pending_backlog} — воркеры не успели обработать очередь"
-        )
+        failures.append(f"Consumer group lag {pending_backlog} — воркеры не успели обработать очередь")
 
     if failures:
         print("\n❌ FAILURES:")
@@ -202,6 +193,7 @@ def print_report(rps: int, dlq_size: int, pending_backlog: int, ci_mode: bool) -
 # ============================================================
 #  ТОЧКА ВХОДА
 # ============================================================
+
 
 async def run_load_benchmark(
     redis_url: str,
@@ -239,9 +231,7 @@ async def run_load_benchmark(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="OdesaAlert stress test — нагрузочный тест Redis Streams pipeline"
-    )
+    parser = argparse.ArgumentParser(description="OdesaAlert stress test — нагрузочный тест Redis Streams pipeline")
     parser.add_argument("--redis-url", default=None, help="Redis URL (по умолчанию из config)")
     parser.add_argument("--group-id", type=int, default=None, help="Telegram GROUP_ID (по умолчанию из config)")
     parser.add_argument("--messages", type=int, default=2000, help="Количество сообщений (default: 2000)")

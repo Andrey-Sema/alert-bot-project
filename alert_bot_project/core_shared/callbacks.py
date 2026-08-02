@@ -1,12 +1,12 @@
-from typing import Optional
 from aiogram.filters.callback_data import CallbackData
-from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.state import State, StatesGroup
 
 
 class CustomTriggerStates(StatesGroup):
     """
     Група станів кінцевого автомату (FSM) для керування кастомними тригерами користувача.
     """
+
     waiting_for_keyword = State()  # Очікування введення назви кастомної локації від користувача
 
 
@@ -18,6 +18,7 @@ class GroupNavCallback(CallbackData, prefix="nav_group"):
         group (str): Ідентифікатор групи (наприклад, "odesa" або "outside").
         page (int): Поточний номер сторінки для відображення списку.
     """
+
     group: str
     page: int
 
@@ -31,6 +32,7 @@ class LocationToggleCallback(CallbackData, prefix="loc_toggle"):
         location_key (str): Внутрішній інваріантний ключ зони (наприклад, "cheremushki", "port").
         page (int): Поточна сторінка пагінації, на якій знаходиться користувач.
     """
+
     group: str
     location_key: str  # ✅ ФИКС: Перейменовано з inv_key для забезпечення зрозумілої семантики
     page: int
@@ -43,6 +45,7 @@ class ThreatCategoryCallback(CallbackData, prefix="cat_toggle"):
     Attributes:
         category (str): Назва категорії загрози з внутрішнього довідника KR_POTVORY.
     """
+
     category: str
 
 
@@ -53,6 +56,7 @@ class MutePresetCallback(CallbackData, prefix="mute_set"):
     Attributes:
         preset (str): Строковий ідентифікатор пресету ("1", "2", "4", "morning", "clear").
     """
+
     preset: str
 
 
@@ -64,5 +68,6 @@ class CustomActionCallback(CallbackData, prefix="custom_act"):
         action (str): Тип дії, що виконується (наприклад, "delete").
         phrase (Optional[str]): Текст кастомної фрази, якщо дія виконується над конкретним об'єктом.
     """
+
     action: str
-    phrase: Optional[str] = None
+    phrase: str | None = None

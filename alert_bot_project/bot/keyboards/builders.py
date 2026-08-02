@@ -1,10 +1,14 @@
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup
-from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS, KR_POTVORY, DISLOCS_PER_PAGE
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 from alert_bot_project.core_shared.callbacks import (
-    GroupNavCallback, LocationToggleCallback, ThreatCategoryCallback,
-    MutePresetCallback, CustomActionCallback
+    CustomActionCallback,
+    GroupNavCallback,
+    LocationToggleCallback,
+    MutePresetCallback,
+    ThreatCategoryCallback,
 )
+from alert_bot_project.core_shared.constants import DISLOCS_PER_PAGE, KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
 
 # Централизованные константы путей навигации (избавляемся от магических строк)
 MENU_MAIN = "menu:main"
@@ -47,7 +51,9 @@ def build_group_selection_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def build_locations_paginated_keyboard(group: str, active_user_triggers: set[str], page: int = 0) -> InlineKeyboardMarkup:
+def build_locations_paginated_keyboard(
+    group: str, active_user_triggers: set[str], page: int = 0
+) -> InlineKeyboardMarkup:
     source_map = ODESA_LOCS if group == "odesa" else OUTSIDE_LOCS
     items = list(source_map.items())
     total_items = len(items)
@@ -67,7 +73,9 @@ def build_locations_paginated_keyboard(group: str, active_user_triggers: set[str
         is_active = inv_key in active_user_triggers
         status_marker = "✅" if is_active else "❌"
         button_label = f"{status_marker} {meta['emoji']} {meta['display']}"
-        kb.button(text=button_label, callback_data=LocationToggleCallback(group=group, location_key=inv_key, page=page).pack())
+        kb.button(
+            text=button_label, callback_data=LocationToggleCallback(group=group, location_key=inv_key, page=page).pack()
+        )
 
     if page > 0:
         kb.button(text="⬅️ Попередні", callback_data=GroupNavCallback(group=group, page=page - 1).pack())
@@ -92,7 +100,7 @@ def build_custom_triggers_management_keyboard(custom_phrases: set[str]) -> Inlin
 
 def build_threat_categories_keyboard(active_categories: list[str]) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for cat_name in KR_POTVORY.keys():
+    for cat_name in KR_POTVORY:
         is_enabled = cat_name in active_categories
         status_marker = "✅" if is_enabled else "❌"
         kb.button(text=f"{status_marker} {cat_name}", callback_data=ThreatCategoryCallback(category=cat_name).pack())

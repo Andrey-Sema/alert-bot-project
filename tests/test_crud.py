@@ -1,12 +1,18 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from hypothesis import given, settings, strategies as st
-from datetime import datetime, timezone
+
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from alert_bot_project.database.crud import (
-    get_or_create_user, add_user_trigger, remove_user_trigger,
-    update_user_potvory, update_user_mute, get_users_by_trigger_and_category
+    add_user_trigger,
+    get_or_create_user,
+    get_users_by_trigger_and_category,
+    remove_user_trigger,
+    update_user_mute,
+    update_user_potvory,
 )
 from alert_bot_project.database.models import UserSettings
 
@@ -20,8 +26,8 @@ def mock_session() -> AsyncMock:
 # 1. СТАНДАРТНЫЙ PYTEST (Тестирование логики и путей ветвления)
 # ============================================================================
 
-class TestCrudUserWorkflow:
 
+class TestCrudUserWorkflow:
     @pytest.mark.asyncio
     async def test_get_or_create_user_returns_existing(self, mock_session: AsyncMock) -> None:
         """Если юзер уже есть в базе, метод просто возвращает его без инсертов"""
@@ -71,13 +77,14 @@ class TestCrudUserWorkflow:
         mock_res.scalar_one_or_none.return_value = mock_user
         mock_session.execute.return_value = mock_res
 
-        until_time = datetime.now(timezone.utc)
+        until_time = datetime.now(UTC)
         await update_user_mute(mock_session, user_id=123, muted_until=until_time)
         assert mock_user.muted_until == until_time
 
     @pytest.mark.asyncio
-    async def test_get_users_by_trigger_empty_categories_returns_empty_immediately(self,
-                                                                                   mock_session: AsyncMock) -> None:
+    async def test_get_users_by_trigger_empty_categories_returns_empty_immediately(
+        self, mock_session: AsyncMock
+    ) -> None:
         """Если сет категорий пустой, метод обязан вернуть пустой список сразу, не дергая БД"""
         result = await get_users_by_trigger_and_category(mock_session, category_names=set(), trigger_words={"city"})
 
@@ -89,8 +96,8 @@ class TestCrudUserWorkflow:
 # 2. ИНТЕГРАЦИЯ С HYPOTHESIS (Fuzzing параметров и проверка генерации запросов)
 # ============================================================================
 
-class TestCrudPropertyBased:
 
+class TestCrudPropertyBased:
     @pytest.mark.asyncio
     @settings(max_examples=30)
     @given(user_id=st.integers(min_value=-9223372036854775808, max_value=9223372036854775807))
@@ -108,10 +115,7 @@ class TestCrudPropertyBased:
 
     @pytest.mark.asyncio
     @settings(max_examples=30)
-    @given(
-        user_id=st.integers(min_value=1, max_value=999999999),
-        trigger_word=st.text(min_size=1, max_size=50)
-    )
+    @given(user_id=st.integers(min_value=1, max_value=999999999), trigger_word=st.text(min_size=1, max_size=50))
     async def test_add_user_trigger_contracts(self, user_id: int, trigger_word: str) -> None:
         """Проверяем корректность булевого контракта при добавлении триггеров разной длины и кодировок"""
         mock_session = AsyncMock()
@@ -134,7 +138,7 @@ class TestCrudPropertyBased:
     @settings(max_examples=30)
     @given(
         user_id=st.integers(min_value=1, max_value=999999999),
-        potvory_list=st.lists(st.sampled_from(["Мопеди", "Ракети"]), min_size=0, max_size=2, unique=True)
+        potvory_list=st.lists(st.sampled_from(["Мопеди", "Ракети"]), min_size=0, max_size=2, unique=True),
     )
     async def test_update_user_potvory_mutation(self, user_id: int, potvory_list: list[str]) -> None:
         """Проверяем, что обновление списка потвор мутирует объект модели без падений"""
@@ -153,7 +157,7 @@ class TestCrudPropertyBased:
     @settings(max_examples=30)
     @given(
         categories=st.sets(st.sampled_from(["Мопеди", "Ракети"]), min_size=1),
-        triggers=st.sets(st.text(min_size=3, max_size=15), min_size=0, max_size=5)
+        triggers=st.sets(st.text(min_size=3, max_size=15), min_size=0, max_size=5),
     )
     async def test_get_users_by_trigger_query_building(self, categories: set[str], triggers: set[str]) -> None:
         """Гарантируем, что сложный блок условий (overlap + exists) собирается без синтаксических ошибок SQLAlchemy"""

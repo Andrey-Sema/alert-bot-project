@@ -1,19 +1,21 @@
 import logging
-from typing import Any, Optional
+from typing import Any
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiohttp import ClientTimeout
 from redis.asyncio import Redis
+
 from alert_bot_project.core_shared.config import config
 
 logger = logging.getLogger("bot.loader")
 
 # Внутреннее приватное хранилище для ленивых синглтонов
-_bot: Optional[Bot] = None
-_dp: Optional[Dispatcher] = None
-_redis_client: Optional[Redis] = None
+_bot: Bot | None = None
+_dp: Dispatcher | None = None
+_redis_client: Redis | None = None
 
 
 def __getattr__(name: str) -> Any:
@@ -30,11 +32,7 @@ def __getattr__(name: str) -> Any:
             logger.info("Lazy-initializing official Bot API client...")
             custom_timeout = ClientTimeout(total=10.0, connect=2.0, sock_read=5.0)
             session = AiohttpSession(timeout=custom_timeout)
-            _bot = Bot(
-                token=config.BOT_TOKEN,
-                session=session,
-                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-            )
+            _bot = Bot(token=config.BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         return _bot
 
     if name == "dp":

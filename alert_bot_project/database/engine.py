@@ -1,4 +1,5 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from alert_bot_project.core_shared.config import config
 
 # Production-grade async engine configuration targeting Supabase instance
@@ -13,14 +14,10 @@ engine = create_async_engine(
         "timeout": 5,
         "command_timeout": 10,
         "ssl": "require",
-        "statement_cache_size": 0,           # Каноничное отключение кэша стейтментов для asyncpg
-        "prepared_statement_cache_size": 0   # Дополнительный оверрайд контроля кэша
-    }
+        "statement_cache_size": 0,  # Каноничное отключение кэша стейтментов для asyncpg
+        "prepared_statement_cache_size": 0,  # Дополнительный оверрайд контроля кэша
+    },
 )
 
 # Shared factory generating isolated state transaction parameters
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False
-)
+AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)

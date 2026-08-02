@@ -1,9 +1,11 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
-import json
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import json
 from datetime import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from alert_bot_project.worker.broadcaster import Broadcaster
 
 
@@ -17,15 +19,16 @@ def mock_redis() -> MagicMock:
     # ✅ СЕНЬОР-ФИКС: Разделяем синхронные и асинхронные методы Redis для защиты от вечных циклов
     r = MagicMock()
     r.register_script = MagicMock()  # Синхронный по контракту библиотеки
-    r.exists = AsyncMock()           # Асинхронные
+    r.exists = AsyncMock()  # Асинхронные
     r.zadd = AsyncMock()
     return r
 
 
 class TestBroadcasterDelayedLogic:
-
     @pytest.mark.asyncio
-    async def test_execute_scheduling_stores_correct_unix_intervals(self, mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    async def test_execute_scheduling_stores_correct_unix_intervals(
+        self, mock_bot: AsyncMock, mock_redis: MagicMock
+    ) -> None:
         broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis)
 
         with patch("time.time", return_value=1700000000):
@@ -35,7 +38,7 @@ class TestBroadcasterDelayedLogic:
             called_args = mock_redis.zadd.call_args[1]
             mapping = called_args[0] if len(called_args) == 1 else mock_redis.zadd.call_args[0][1]
 
-            steps = [json.loads(k)["step"] for k in mapping.keys()]
+            steps = [json.loads(k)["step"] for k in mapping]
             assert 2 in steps
             assert 3 in steps
 
@@ -57,7 +60,9 @@ class TestBroadcasterDelayedLogic:
             mock_fire.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_process_delayed_alerts_drops_tasks_during_daytime(self, mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    async def test_process_delayed_alerts_drops_tasks_during_daytime(
+        self, mock_bot: AsyncMock, mock_redis: MagicMock
+    ) -> None:
         broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis)
 
         # Скрипт — корутина, которая будет вызвана внутри
@@ -67,8 +72,10 @@ class TestBroadcasterDelayedLogic:
 
         daytime_mock = time(12, 0, 0)
 
-        with patch("alert_bot_project.worker.broadcaster.datetime") as mock_dt, \
-                patch.object(broadcaster, "_process_single_delayed_task") as mock_process_task:
+        with (
+            patch("alert_bot_project.worker.broadcaster.datetime") as mock_dt,
+            patch.object(broadcaster, "_process_single_delayed_task") as mock_process_task,
+        ):
             mock_dt.now.return_value.time.return_value = daytime_mock
 
             with pytest.raises(asyncio.CancelledError):

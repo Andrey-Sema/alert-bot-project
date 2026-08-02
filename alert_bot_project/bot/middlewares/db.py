@@ -1,8 +1,11 @@
 import logging
-from typing import Callable, Dict, Any, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 from sqlalchemy.exc import SQLAlchemyError
+
 from alert_bot_project.database.engine import AsyncSessionLocal
 
 logger = logging.getLogger("bot.middlewares.db")
@@ -10,10 +13,10 @@ logger = logging.getLogger("bot.middlewares.db")
 
 class DatabaseMiddleware(BaseMiddleware):
     async def __call__(
-            self,
-            handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-            event: TelegramObject,
-            data: Dict[str, Any]
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
     ) -> Any:
         async with AsyncSessionLocal() as session:
             data["db_session"] = session

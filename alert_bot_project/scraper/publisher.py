@@ -1,7 +1,7 @@
 import logging
-from typing import Optional
+
 from redis.asyncio import Redis
-from redis.exceptions import RedisError, ConnectionError
+from redis.exceptions import ConnectionError, RedisError
 
 from alert_bot_project.core_shared.config import config
 
@@ -12,26 +12,24 @@ class RedisPublisher:
     def __init__(self) -> None:
         self.redis_url = config.REDIS_URL
         self.stream_name = "alerts_stream"
-        self._redis: Optional[Redis] = None
+        self._redis: Redis | None = None
 
     async def connect(self) -> None:
         """Ініціалізує з'єднання з пулом Redis Streams."""
         if not self._redis:
-            self._redis = Redis.from_url(self.redis_url, decode_responses=True)
-            await self._redis.ping()
+            redis_client = Redis.from_url(self.redis_url, decode_responses=True)
+            await redis_client.ping()
+            self._redis = redis_client
             logger.info("🔌 Підключення до Redis Streams установлено та перевірено")
 
     async def publish_message(self, json_data: str) -> str:
         """Відправляє повідомлення в персистентний Redis Stream з обмеженням довжини."""
         if not self._redis:
             await self.connect()
+        assert self._redis is not None
 
         try:
-            msg_id: str = await self._redis.xadd(
-                self.stream_name,
-                {"payload": json_data},
-                maxlen=10000
-            )
+            msg_id: str = await self._redis.xadd(self.stream_name, {"payload": json_data}, maxlen=10000)
             logger.info("📨 Повідомлення записано в Stream (ID: %s)", msg_id)
             return msg_id
 

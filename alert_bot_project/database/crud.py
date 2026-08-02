@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
-from typing import Sequence, Optional, List, Set
-from sqlalchemy import select, delete, or_, and_, exists
+from collections.abc import Sequence
+from datetime import UTC, datetime
+
+from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from alert_bot_project.database.models import UserSettings, UserTrigger
 
 
@@ -40,34 +42,31 @@ async def add_user_trigger(session: AsyncSession, user_id: int, trigger_word: st
         .on_conflict_do_nothing(index_elements=["user_id", "trigger_word"])
     )
     res = await session.execute(stmt)
-    return res.rowcount > 0
+    # CursorResult.rowcount не виден статически на базовом типе Result[Any], который
+    # объявляет execute(); во время выполнения объект всегда является CursorResult.
+    return bool(res.rowcount > 0)  # type: ignore[attr-defined]
 
 
 async def remove_user_trigger(session: AsyncSession, user_id: int, trigger_word: str) -> None:
     """Удалить триггер пользователя."""
-    stmt = delete(UserTrigger).where(
-        UserTrigger.user_id == user_id,
-        UserTrigger.trigger_word == trigger_word
-    )
+    stmt = delete(UserTrigger).where(UserTrigger.user_id == user_id, UserTrigger.trigger_word == trigger_word)
     await session.execute(stmt)
 
 
-async def update_user_potvory(session: AsyncSession, user_id: int, potvory_list: List[str]) -> None:
+async def update_user_potvory(session: AsyncSession, user_id: int, potvory_list: list[str]) -> None:
     """Обновить список категорий угроз."""
     user = await get_or_create_user(session, user_id)
     user.potvory = potvory_list
 
 
-async def update_user_mute(session: AsyncSession, user_id: int, muted_until: Optional[datetime]) -> None:
+async def update_user_mute(session: AsyncSession, user_id: int, muted_until: datetime | None) -> None:
     """Установить или снять mute."""
     user = await get_or_create_user(session, user_id)
     user.muted_until = muted_until
 
 
 async def get_users_by_trigger_and_category(
-        session: AsyncSession,
-        category_names: Set[str],
-        trigger_words: Set[str]
+    session: AsyncSession, category_names: set[str], trigger_words: set[str]
 ) -> Sequence[UserSettings]:
     """
     Найти пользователей для рассылки алерта.
@@ -78,12 +77,14 @@ async def get_users_by_trigger_and_category(
     if not category_names:
         return []
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Базовые условия отбора (Режим тишины + Категории)
     conditions = [
-        or_(UserSettings.muted_until == None, UserSettings.muted_until < now),
-        UserSettings.potvory.overlap(list(category_names))
+        # `== None` тут навмисно: це SQLAlchemy DSL, який генерує `IS NULL` у SQL.
+        # `is None` не спрацює — SQLAlchemy перевизначає __eq__ на колонках, а не `is`.
+        or_(UserSettings.muted_until == None, UserSettings.muted_until < now),  # noqa: E711
+        UserSettings.potvory.overlap(list(category_names)),
     ]
 
     # ✅ ОПТИМИЗАЦИЯ: Убрано лишнее приведение list(trigger_words).
@@ -91,10 +92,7 @@ async def get_users_by_trigger_and_category(
     if trigger_words:
         conditions.append(
             exists().where(
-                and_(
-                    UserTrigger.user_id == UserSettings.user_id,
-                    UserTrigger.trigger_word.in_(trigger_words)
-                )
+                and_(UserTrigger.user_id == UserSettings.user_id, UserTrigger.trigger_word.in_(trigger_words))
             )
         )
 

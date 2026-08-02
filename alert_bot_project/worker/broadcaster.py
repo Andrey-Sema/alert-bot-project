@@ -1,20 +1,25 @@
 import asyncio
-import logging
-import json
-import time
-import hmac
 import hashlib
-from typing import Optional
+import hmac
+import json
+import logging
+import time
+from asyncio import Task
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.types import InlineKeyboardMarkup
-from aiogram.exceptions import TelegramRetryAfter, TelegramAPIError
 from redis.asyncio import Redis
+
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.constants import (
-    ALERT_FIRST, ALERT_SECOND, ALERT_THIRD,
-    ALERT_DELAY_1, ALERT_DELAY_2, KYIV_TZ
+    ALERT_DELAY_1,
+    ALERT_DELAY_2,
+    ALERT_SECOND,
+    ALERT_THIRD,
+    KYIV_TZ,
 )
 
 logger = logging.getLogger("worker.broadcaster")
@@ -38,10 +43,10 @@ class Broadcaster:
         self.redis = redis_client
         self.workers_count = workers_count
         self.delayed_queue_key = "delayed_alerts_queue"
-        self.queue = asyncio.Queue(maxsize=10000)
-        self._workers = []
+        self.queue: asyncio.Queue[tuple[int, str, InlineKeyboardMarkup | None, bool]] = asyncio.Queue(maxsize=10000)
+        self._workers: list[Task[None]] = []
         self._salt = config.API_HASH.encode()
-        self._background_tasks = set()
+        self._background_tasks: set[Task[None]] = set()
 
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
         self._night_end = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
@@ -50,12 +55,12 @@ class Broadcaster:
     def _hash_id(self, chat_id: int) -> str:
         return hmac.new(self._salt, str(chat_id).encode(), hashlib.sha256).hexdigest()[:16]
 
-    def start(self):
+    def start(self) -> None:
         # ✅ ФИКС С СОНАРОМ (python:S7503): Убран избыточный async/await, так как создание тасков синхронно
         if not self._workers:
             self._workers = [asyncio.create_task(self._queue_worker()) for _ in range(self.workers_count)]
 
-    async def close(self):
+    async def close(self) -> None:
         logger.info("Очікування завершення розсилки повідомлень у черзі...")
         await self.queue.join()
         for w in self._workers:
@@ -63,7 +68,7 @@ class Broadcaster:
         await asyncio.gather(*self._workers, return_exceptions=True)
         logger.info("Воркери розсилки успешно остановлены.")
 
-    async def _queue_worker(self):
+    async def _queue_worker(self) -> None:
         while True:
             try:
                 chat_id, text, reply_markup, disable_notification = await self.queue.get()
@@ -76,8 +81,13 @@ class Broadcaster:
             except Exception:
                 logger.exception("Queue worker exception")
 
-    async def send_single_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None,
-                                  disable_notification: bool = False):
+    async def send_single_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        disable_notification: bool = False,
+    ) -> bool:
         total_time_waited = 0
         max_wait_seconds = config.TELEGRAM_MAX_RETRY_SECONDS
         peer_hash = self._hash_id(chat_id)
@@ -89,7 +99,7 @@ class Broadcaster:
                     text=text,
                     parse_mode="HTML",
                     reply_markup=reply_markup,
-                    disable_notification=disable_notification
+                    disable_notification=disable_notification,
                 )
                 await asyncio.sleep(0.04)
                 return True
@@ -108,36 +118,46 @@ class Broadcaster:
         logger.error("Таймаут доставки превышен для peer %s.", peer_hash)
         return False
 
-    def fire_and_forget_message(self, chat_id: int, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None,
-                                disable_notification: bool = False):
+    def fire_and_forget_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        disable_notification: bool = False,
+    ) -> None:
         try:
             self.queue.put_nowait((chat_id, text, reply_markup, disable_notification))
         except asyncio.QueueFull:
-            logger.warning("Внутренняя очередь переполнена. Запуск фоновой принудительной записи для peer %s",
-                           self._hash_id(chat_id))
+            logger.warning(
+                "Внутренняя очередь переполнена. Запуск фоновой принудительной записи для peer %s",
+                self._hash_id(chat_id),
+            )
             task = asyncio.create_task(self.queue.put((chat_id, text, reply_markup, disable_notification)))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
 
-    async def _execute_scheduling(self, chat_id: int, disable_notification: bool):
+    async def _execute_scheduling(self, chat_id: int, disable_notification: bool) -> None:
         try:
             now_unix = int(time.time())
             task_step_2 = {"chat_id": chat_id, "step": 2, "text": ALERT_SECOND, "silent": disable_notification}
             task_step_3 = {"chat_id": chat_id, "step": 3, "text": ALERT_THIRD, "silent": disable_notification}
 
-            await self.redis.zadd(self.delayed_queue_key, {
-                json.dumps(task_step_2): now_unix + ALERT_DELAY_1,
-                json.dumps(task_step_3): now_unix + ALERT_DELAY_1 + ALERT_DELAY_2
-            })
+            await self.redis.zadd(
+                self.delayed_queue_key,
+                {
+                    json.dumps(task_step_2): now_unix + ALERT_DELAY_1,
+                    json.dumps(task_step_3): now_unix + ALERT_DELAY_1 + ALERT_DELAY_2,
+                },
+            )
         except Exception:
             logger.exception("Сбой записи в отложенную очередь для peer %s", self._hash_id(chat_id))
 
-    def schedule_delayed_alerts(self, chat_id: int, disable_notification: bool):
+    def schedule_delayed_alerts(self, chat_id: int, disable_notification: bool) -> None:
         task = asyncio.create_task(self._execute_scheduling(chat_id, disable_notification))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _process_single_delayed_task(self, task_raw: str):
+    async def _process_single_delayed_task(self, task_raw: str) -> None:
         """✅ СЕНЬОР-ФИКС: Вынесено в отдельный метод для декомпозиции сложности (Cognitive Complexity)."""
         try:
             task_data = json.loads(task_raw)
@@ -152,12 +172,10 @@ class Broadcaster:
             return
 
         self.fire_and_forget_message(
-            chat_id=user_id,
-            text=task_data["text"],
-            disable_notification=task_data.get("silent", False)
+            chat_id=user_id, text=task_data["text"], disable_notification=task_data.get("silent", False)
         )
 
-    async def process_delayed_alerts(self):
+    async def process_delayed_alerts(self) -> None:
         script = self.redis.register_script(POP_MATURE_TASKS_LUA)
         while True:
             try:
