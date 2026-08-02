@@ -197,7 +197,11 @@ class AlarmStatePoller:
         state_ttl: int = 90,
     ) -> None:
         self.redis = redis_client
-        self.client = UkraineAlarmClient(api_key or config.UKRAINEALARM_API_KEY)
+        # Ключ необов'язковий: якщо він не заданий, поллер вимикається (див. run()),
+        # а не валить весь процес воркера — офіційна тривога лишається "приємним доповненням"
+        # до основного аналізу тексту каналу, а не жорсткою залежністю на старті.
+        resolved_api_key = api_key or config.UKRAINEALARM_API_KEY
+        self.client = UkraineAlarmClient(resolved_api_key) if resolved_api_key else None
         self._region_id = region_id or config.UKRAINEALARM_REGION_ID
         self._region_name = region_name
         self._poll_interval = poll_interval
@@ -211,6 +215,7 @@ class AlarmStatePoller:
     async def _resolve_region(self) -> str | None:
         if self._region_id:
             return self._region_id
+        assert self.client is not None  # гарантовано run(): цей метод викликається лише з циклу опитування
         rid = await self.client.resolve_region_id(self._region_name)
         if rid:
             self._region_id = rid
@@ -240,6 +245,7 @@ class AlarmStatePoller:
             await self.redis.expire(OFFICIAL_ALARM_KEY, self._state_ttl)
             return
 
+        assert self.client is not None  # гарантовано run(): цей метод викликається лише з циклу опитування
         alerts = await self.client.get_region_alerts(region_id)
         active = UkraineAlarmClient.is_air_active(alerts)
         await self._write_state(active)
@@ -248,6 +254,7 @@ class AlarmStatePoller:
         logger.info("Official air-alarm for oblast=%s -> active=%s", region_id, active)
 
     async def get_status_index_safe(self) -> int | None:
+        assert self.client is not None  # гарантовано run(): цей метод викликається лише з циклу опитування
         try:
             return await self.client.get_status_index()
         except Exception:
@@ -256,6 +263,15 @@ class AlarmStatePoller:
 
     async def run(self, shutdown_event: asyncio.Event) -> None:
         """Головний цикл. Завершується коли виставлено shutdown_event."""
+        if self.client is None:
+            logger.warning(
+                "UKRAINEALARM_API_KEY не задано — інтеграція з офіційним API вимкнена. "
+                "worker.check_official_air_alarm() сам піде у failsafe-режим "
+                "(OFFICIAL_ALARM_FAILSAFE=%s), поллер завершує роботу без циклу опитування.",
+                config.OFFICIAL_ALARM_FAILSAFE,
+            )
+            return
+
         logger.info("UkraineAlarm poller started (interval=%ss)", self._poll_interval)
         try:
             while not shutdown_event.is_set():

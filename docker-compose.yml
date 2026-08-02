@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ✅ ЯКОРЬ: Декларация общих параметров для минимизации дублирования (DRY)
 x-common-service: &common-service
   build:

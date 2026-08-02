@@ -9,6 +9,7 @@ from alert_bot_project.worker.main import process_single_stream_payload
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestE2EAlertPipeline:
     async def test_full_pipeline_from_text_to_worker_routing(self) -> None:
         """

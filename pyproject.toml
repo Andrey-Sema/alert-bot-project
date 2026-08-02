@@ -18,10 +18,12 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 # ✅ ФИКС: Разрешаем принты для нагрузочного скрипта stress_test.py и dev-утилиты dump_project.py
 "alert_bot_project/scripts/**" = ["T201"]
 "dump_project.py" = ["T201"]
-# assert используется для type-narrowing Optional-полей aiogram (message/from_user);
-# проект не запускается с python -O, поэтому это осознанный выбор, а не случайный assert
+# assert используется для type-narrowing Optional-полей (aiogram message/from_user,
+# UkraineAlarmClient); проект не запускается с python -O, поэтому это осознанный
+# выбор, а не случайный assert
 "alert_bot_project/bot/handlers/**" = ["S101"]
 "alert_bot_project/scraper/publisher.py" = ["S101"]
+"alert_bot_project/services/ukrainealarm.py" = ["S101"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -35,6 +37,7 @@ indent-style = "space"
 skips = [
     "*bot/handlers/*.py",
     "*scraper/publisher.py",
+    "*services/ukrainealarm.py",
 ]
 
 [tool.mypy]
