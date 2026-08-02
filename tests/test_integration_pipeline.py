@@ -1,22 +1,22 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
 from alert_bot_project.worker.main import process_single_stream_payload
-from alert_bot_project.worker import main as worker_main
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestE2EAlertPipeline:
-
     async def test_full_pipeline_from_text_to_worker_routing(self) -> None:
         """
         Сквозной интеграционный тест конвейера:
         Перехват текста -> Схема Pydantic -> Выборка базы -> Логика Воркера -> Рассылка Бродкастера
         """
-        worker_main.release_lock_script = AsyncMock(return_value=1)
+        mock_release_lock_script = AsyncMock(return_value=1)
 
         # 1. Имитируем боевой пост админов с новыми коварными суффиксами и сленгом
         raw_post = "🚨 ТУРБОДИЗЕЛЬНІ шлюхи заходять з моря на Пересип! Ракети Цыркон на центр!"
@@ -29,11 +29,7 @@ class TestE2EAlertPipeline:
         assert "center" in analysis["locations"]
 
         # 2. Упаковываем данные в строгий контракт serialization
-        payload = AlertMessage(
-            message_id=999,
-            chat_id=-100123456,
-            raw_text=raw_post
-        )
+        payload = AlertMessage(message_id=999, chat_id=-100123456, raw_text=raw_post)
         json_data = payload.model_dump_json()
 
         # 3. Мокаем транспортную инфраструктуру
@@ -59,15 +55,17 @@ class TestE2EAlertPipeline:
         mock_user = MagicMock()
         mock_user.user_id = 4444
 
-        with patch("alert_bot_project.worker.main.get_users_by_trigger_and_category", return_value=[mock_user]), \
-                patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True):
-
+        with (
+            patch("alert_bot_project.worker.main.get_users_by_trigger_and_category", return_value=[mock_user]),
+            patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True),
+        ):
             # 4. Прогоняем весь этот сквозной пайлоад через процессор воркера
             await process_single_stream_payload(
                 redis_msg_id="1690000000-0",
                 raw_json=json_data,
                 redis_client=mock_redis,
-                broadcaster=mock_broadcaster
+                broadcaster=mock_broadcaster,
+                release_lock_script=mock_release_lock_script,
             )
 
             # 5. Проверяем выполнение бизнес-контрактов системы

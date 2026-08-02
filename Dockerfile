@@ -12,10 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Сначала копируем ТОЛЬКО файл зависимостей для правильного кэширования слоёв
-COPY alert_bot_project/requirements.txt .
+COPY requirements.txt .
 
-# ✅ СЕНЬОР-ФИКС: Объединяем апгрейд pip и установку пакетов в один RUN.
-# Добавлена жесткая проверка хэшей (--require-hashes) для защиты от подмены пакетов на PyPI.
+# Объединяем апгрейд pip и установку пакетов в один RUN.
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --prefix=/install -r requirements.txt
 

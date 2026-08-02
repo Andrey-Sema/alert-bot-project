@@ -1,6 +1,7 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from alert_bot_project.bot.middlewares.db import DatabaseMiddleware
@@ -8,7 +9,6 @@ from alert_bot_project.bot.middlewares.db import DatabaseMiddleware
 
 @pytest.mark.asyncio
 class TestDatabaseMiddleware:
-
     async def test_middleware_successful_flow(self) -> None:
         """Проверяем, что при успешном прохождении хендлера сессия создается, коммитится и закрывается"""
         mock_session = AsyncMock()
@@ -63,7 +63,7 @@ class TestDatabaseMiddleware:
             mock_event = MagicMock()
             mock_data = {}
 
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Unexpected validation error"):
                 await middleware(mock_handler, mock_event, mock_data)
 
             mock_session.rollback.assert_called_once()

@@ -1,24 +1,23 @@
 import re
-from typing import Set, Dict, Any, Iterable
-from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS, KR_POTVORY
+from collections.abc import Iterable
+from typing import Any
+
+from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
 
 CLEAN_PATTERN = re.compile(r"[^\w\s-]")
 
 
-def _compile_word_boundary_pattern(keywords: Iterable[str]) -> re.Pattern:
+def _compile_word_boundary_pattern(keywords: Iterable[str]) -> re.Pattern[str]:
     """Складає та прекомпілює регулярний вираз із межами слів для захисту від помилкових спрацьовувань."""
     escaped_words = "|".join(re.escape(word) for word in keywords)
     # ✅ ФИКС: Увеличен лимит суффикса до \w{0,3} для гибкого захвата падежей и окончаний
     return re.compile(rf"(?<![\w])({escaped_words})\w{{0,3}}(?![\w])")
 
 
-COMPILED_CATEGORIES = {
-    category: _compile_word_boundary_pattern(keywords)
-    for category, keywords in KR_POTVORY.items()
-}
+COMPILED_CATEGORIES = {category: _compile_word_boundary_pattern(keywords) for category, keywords in KR_POTVORY.items()}
 
 COMPILED_LOCATIONS = {
-    loc_key: _compile_word_boundary_pattern(data['patterns'])
+    loc_key: _compile_word_boundary_pattern(data["patterns"])
     for loc_key, data in {**ODESA_LOCS, **OUTSIDE_LOCS}.items()
 }
 
@@ -32,11 +31,11 @@ class TextProcessor:
         return CLEAN_PATTERN.sub("", text.lower()).strip()
 
     @classmethod
-    def parse_message(cls, raw_text: str) -> Dict[str, Any]:
+    def parse_message(cls, raw_text: str) -> dict[str, Any]:
         """Аналізує повідомлення на наявність категорій загроз та збігів із тригерними локаціями."""
         normalized_text = cls.normalize(raw_text)
-        matched_categories: Set[str] = set()
-        matched_locations: Set[str] = set()
+        matched_categories: set[str] = set()
+        matched_locations: set[str] = set()
 
         if not normalized_text:
             return {"categories": matched_categories, "locations": matched_locations}
@@ -49,7 +48,4 @@ class TextProcessor:
             if pattern.search(normalized_text):
                 matched_locations.add(loc_key)
 
-        return {
-            "categories": matched_categories,
-            "locations": matched_locations
-        }
+        return {"categories": matched_categories, "locations": matched_locations}

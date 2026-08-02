@@ -1,9 +1,9 @@
-
-import time
 import logging
-from typing import Callable, Dict, Any, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject, Update
+from aiogram.types import TelegramObject
 from redis.asyncio import Redis
 
 logger = logging.getLogger("bot.middlewares.throttling")
@@ -22,9 +22,9 @@ class ThrottlingMiddleware(BaseMiddleware):
 
     async def __call__(
         self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
         event: TelegramObject,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> Any:
         user = data.get("event_from_user")
         if user is None:

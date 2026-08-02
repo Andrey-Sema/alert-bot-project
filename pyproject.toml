@@ -8,20 +8,40 @@ select = [
     "E", "W", "F", "I", "B", "SIM", "S",
     "ASYNC", "UP", "N", "T20", "PT", "C4", "RUF"
 ]
-ignore = []
+# RUF001-003 гасим намеренно: кодовая база двуязычная (укр./рус.), кириллица
+# в строках/докстрингах/комментариях — норма проекта, а не подмена символов.
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 # ✅ ФИКС: Расширили пул игноров для тестов (S106, S108), чтобы Hypothesis не штормило варнингами
 "tests/**" = ["S101", "S105", "S106", "S108", "S311", "T201"]
-# ✅ ФИКС: Разрешаем принты для нагрузочного скрипта stress_test.py
+# ✅ ФИКС: Разрешаем принты для нагрузочного скрипта stress_test.py и dev-утилиты dump_project.py
 "alert_bot_project/scripts/**" = ["T201"]
+"dump_project.py" = ["T201"]
+# assert используется для type-narrowing Optional-полей (aiogram message/from_user,
+# UkraineAlarmClient); проект не запускается с python -O, поэтому это осознанный
+# выбор, а не случайный assert
+"alert_bot_project/bot/handlers/**" = ["S101"]
+"alert_bot_project/scraper/publisher.py" = ["S101"]
+"alert_bot_project/services/ukrainealarm.py" = ["S101"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
+[tool.bandit]
+
+[tool.bandit.assert_used]
+# Те самі файли, що й у [tool.ruff.lint.per-file-ignores] під S101: assert тут
+# навмисно звужує Optional-поля aiogram (message/from_user), а не випадковий дебаг-код.
+skips = [
+    "*bot/handlers/*.py",
+    "*scraper/publisher.py",
+    "*services/ukrainealarm.py",
+]
+
 [tool.mypy]
-plugins = ["sqlalchemy.ext.mypy.plugin"]
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
 # ✅ ФИКС: Указываем верную версию для MyPy и убираем дублирующие флаги, которые уже включены в strict
 python_version = "3.11"
 strict = true

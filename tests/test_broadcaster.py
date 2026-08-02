@@ -1,8 +1,10 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from aiogram.exceptions import TelegramRetryAfter, TelegramAPIError
+
+import pytest
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+
 from alert_bot_project.worker.broadcaster import Broadcaster
 
 
@@ -17,10 +19,10 @@ def mock_redis() -> AsyncMock:
 
 
 class TestBroadcasterQueueEngine:
-
     @pytest.mark.asyncio
-    async def test_broadcaster_task_retention_and_gc_protection(self, mock_bot: AsyncMock,
-                                                                mock_redis: AsyncMock) -> None:
+    async def test_broadcaster_task_retention_and_gc_protection(
+        self, mock_bot: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
         broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis, workers_count=1)
         broadcaster.queue = asyncio.Queue(maxsize=1)
 
@@ -39,15 +41,16 @@ class TestBroadcasterQueueEngine:
 
     @pytest.mark.asyncio
     @patch("asyncio.sleep")
-    async def test_send_single_message_handles_flood_control_retry(self, mock_sleep: MagicMock, mock_bot: AsyncMock,
-                                                                   mock_redis: AsyncMock) -> None:
+    async def test_send_single_message_handles_flood_control_retry(
+        self, mock_sleep: MagicMock, mock_bot: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
         """Проверка поимки TelegramRetryAfter (429): бродкастер должен виртуально засыпать и повторять попытку"""
         broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis, workers_count=1)
         mock_sleep.return_value = None
 
         mock_bot.send_message.side_effect = [
             TelegramRetryAfter(retry_after=5, method=MagicMock(), message="Flood control"),
-            AsyncMock()  # ✅ СЕНЬОР-ФИКС: Второй вызов делаем строго асинхронным под Python 3.13
+            AsyncMock(),  # ✅ СЕНЬОР-ФИКС: Второй вызов делаем строго асинхронным под Python 3.13
         ]
 
         success = await broadcaster.send_single_message(chat_id=777, text="Тест флуд контроля")
@@ -58,8 +61,9 @@ class TestBroadcasterQueueEngine:
         mock_sleep.assert_any_call(5)
 
     @pytest.mark.asyncio
-    async def test_send_single_message_catches_api_error_smoothly(self, mock_bot: AsyncMock,
-                                                                  mock_redis: AsyncMock) -> None:
+    async def test_send_single_message_catches_api_error_smoothly(
+        self, mock_bot: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
         broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis, workers_count=1)
         mock_bot.send_message.side_effect = TelegramAPIError(message="Chat not found", method=MagicMock())
 
@@ -67,8 +71,9 @@ class TestBroadcasterQueueEngine:
         assert success is False
 
     @pytest.mark.asyncio
-    async def test_broadcaster_lifecycle_and_graceful_shutdown(self, mock_bot: AsyncMock,
-                                                               mock_redis: AsyncMock) -> None:
+    async def test_broadcaster_lifecycle_and_graceful_shutdown(
+        self, mock_bot: AsyncMock, mock_redis: AsyncMock
+    ) -> None:
         broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis, workers_count=2)
 
         broadcaster.start()

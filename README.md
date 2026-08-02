@@ -174,6 +174,11 @@ CREATE TABLE user_triggers (
 - **Dead Letter Queue** — після 5 невдалих спроб запис у `dead_letter_queue` stream
 - **Broadcaster** — 15 паралельних asyncio-воркерів, `asyncio.Queue(maxsize=10000)`
 - **Відкладені сирени** — ZSET `delayed_alerts_queue` з Lua-скриптом атомарного pop
+- **AlarmStatePoller** (`services/ukrainealarm.py`) — фоновий демон, що опитує офіційне
+  API [api.ukrainealarm.com](https://api.ukrainealarm.com) та ескалує поріг матчингу
+  тексту при активній офіційній тривозі. Повністю необов'язковий: без
+  `UKRAINEALARM_API_KEY` поллер вимикається сам, а воркер продовжує працювати
+  тільки на аналізі тексту каналу
 
 ### 🤖 Bot UI (`alert_bot_project/bot/`)
 
@@ -323,6 +328,11 @@ METRICS_PORT_BOT=8002
 NIGHT_START_HOUR=22                 # Початок роботи (0–23)
 NIGHT_END_HOUR=7                    # Завершення роботи (0–23)
 TELEGRAM_MAX_RETRY_SECONDS=180      # Максимум очікування при Flood Control (429)
+
+# ─── UkraineAlarm.com (офіційне API тривог, НЕОБОВ'ЯЗКОВО) ───────────────────
+UKRAINEALARM_API_KEY=                # Ключ з api.ukrainealarm.com; порожньо = інтеграція вимкнена
+UKRAINEALARM_REGION_ID=              # ID Одеської області; порожньо = резолвиться автоматично
+OFFICIAL_ALARM_FAILSAFE=true         # Стан тривоги, коли API недоступне/не налаштоване (fail-open)
 
 # ─── Логування ───────────────────────────────────────────────────────────────
 LOG_LEVEL=INFO

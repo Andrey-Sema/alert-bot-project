@@ -1,12 +1,14 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from aiogram.fsm.context import FSMContext
-from sqlalchemy.exc import SQLAlchemyError
-from hypothesis import given, settings, strategies as st, HealthCheck
 
-from alert_bot_project.bot.handlers.start import process_start_command, process_return_to_main_menu
+import pytest
+from aiogram.fsm.context import FSMContext
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+from sqlalchemy.exc import SQLAlchemyError
+
 from alert_bot_project.bot.handlers.settings import show_group_selection, store_custom_user_keyword
+from alert_bot_project.bot.handlers.start import process_return_to_main_menu, process_start_command
 from alert_bot_project.database.models import UserSettings
 
 
@@ -21,7 +23,6 @@ def mock_fsm_state() -> AsyncMock:
 
 
 class TestStartHandlers:
-
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.start.get_or_create_user")
     async def test_process_start_command_success(self, mock_get_user: MagicMock, mock_db_session: AsyncMock) -> None:
@@ -38,8 +39,9 @@ class TestStartHandlers:
 
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.start.get_or_create_user")
-    async def test_process_start_command_database_crash(self, mock_get_user: MagicMock,
-                                                        mock_db_session: AsyncMock) -> None:
+    async def test_process_start_command_database_crash(
+        self, mock_get_user: MagicMock, mock_db_session: AsyncMock
+    ) -> None:
         mock_user_tg = MagicMock(id=999)
         mock_message = AsyncMock(from_user=mock_user_tg)
         mock_get_user.side_effect = SQLAlchemyError("Supabase connection timeout")
@@ -61,7 +63,6 @@ class TestStartHandlers:
 
 
 class TestSettingsHandlers:
-
     @pytest.mark.asyncio
     async def test_show_group_selection(self) -> None:
         mock_message = AsyncMock()
@@ -73,8 +74,9 @@ class TestSettingsHandlers:
         mock_callback.answer.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_store_custom_user_keyword_invalid_length(self, mock_db_session: AsyncMock,
-                                                            mock_fsm_state: AsyncMock) -> None:
+    async def test_store_custom_user_keyword_invalid_length(
+        self, mock_db_session: AsyncMock, mock_fsm_state: AsyncMock
+    ) -> None:
         mock_message = AsyncMock(text="бп")
 
         await store_custom_user_keyword(mock_message, state=mock_fsm_state, db_session=mock_db_session)
@@ -84,8 +86,9 @@ class TestSettingsHandlers:
         mock_fsm_state.clear.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_store_custom_user_keyword_prebuilt_warning(self, mock_db_session: AsyncMock,
-                                                              mock_fsm_state: AsyncMock) -> None:
+    async def test_store_custom_user_keyword_prebuilt_warning(
+        self, mock_db_session: AsyncMock, mock_fsm_state: AsyncMock
+    ) -> None:
         mock_message = AsyncMock(text="Черемушки")
 
         await store_custom_user_keyword(mock_message, state=mock_fsm_state, db_session=mock_db_session)
@@ -97,8 +100,13 @@ class TestSettingsHandlers:
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.settings.UserService")
     @patch("alert_bot_project.bot.handlers.settings.get_or_create_user")
-    async def test_store_custom_user_keyword_success(self, mock_get_user: MagicMock, mock_user_service_cls: MagicMock,
-                                                     mock_db_session: AsyncMock, mock_fsm_state: AsyncMock) -> None:
+    async def test_store_custom_user_keyword_success(
+        self,
+        mock_get_user: MagicMock,
+        mock_user_service_cls: MagicMock,
+        mock_db_session: AsyncMock,
+        mock_fsm_state: AsyncMock,
+    ) -> None:
         mock_user_tg = MagicMock()
         mock_user_tg.id = 555
         mock_message = AsyncMock(from_user=mock_user_tg, text="Люстдорф")
@@ -115,13 +123,13 @@ class TestSettingsHandlers:
 
 
 class TestSettingsHandlersFuzzing:
-
     @pytest.mark.asyncio
     # ✅ ФИКС: Подавляем хелсчек на использование function-scoped фикстур базы внутри Hypothesis
     @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @given(user_text=st.text(min_size=1, max_size=100))
-    async def test_store_custom_user_keyword_resilience_matrix(self, user_text: str, mock_db_session: AsyncMock,
-                                                               mock_fsm_state: AsyncMock) -> None:
+    async def test_store_custom_user_keyword_resilience_matrix(
+        self, user_text: str, mock_db_session: AsyncMock, mock_fsm_state: AsyncMock
+    ) -> None:
         mock_user_tg = MagicMock(id=555)
         mock_message = AsyncMock(from_user=mock_user_tg, text=user_text)
 

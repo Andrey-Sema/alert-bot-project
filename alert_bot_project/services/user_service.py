@@ -1,19 +1,19 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Optional, List, Set
-from sqlalchemy import select, exists
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from redis.asyncio import Redis
+from sqlalchemy import exists, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from alert_bot_project.core_shared.constants import MAX_CUSTOM_TRIGGERS, ODESA_LOCS, OUTSIDE_LOCS, KYIV_TZ
-from alert_bot_project.database.models import UserTrigger
+from alert_bot_project.core_shared.constants import KYIV_TZ, MAX_CUSTOM_TRIGGERS, ODESA_LOCS, OUTSIDE_LOCS
 from alert_bot_project.database.crud import (
-    get_or_create_user, add_user_trigger, remove_user_trigger,
-    update_user_potvory, update_user_mute
+    add_user_trigger,
+    get_or_create_user,
+    remove_user_trigger,
+    update_user_mute,
 )
-
-
+from alert_bot_project.database.models import UserTrigger
 
 logger = logging.getLogger("services.user_service")
 
@@ -23,7 +23,7 @@ class UserService:
         self.session = db_session
         self.redis = redis_client
 
-    async def toggle_location(self, user_id: int, location_key: str) -> Set[str]:
+    async def toggle_location(self, user_id: int, location_key: str) -> set[str]:
         user = await get_or_create_user(self.session, user_id)
 
         if location_key in user.triggers_set:
@@ -31,7 +31,7 @@ class UserService:
         else:
             await add_user_trigger(self.session, user_id, location_key)
 
-        await self.session.refresh(user, attribute_names=['triggers_rel'])
+        await self.session.refresh(user, attribute_names=["triggers_rel"])
         return user.triggers_set
 
     async def add_custom_trigger(self, user_id: int, trigger_word: str) -> tuple[bool, str]:
@@ -45,7 +45,7 @@ class UserService:
 
         success = await add_user_trigger(self.session, user_id, trigger_word)
         if success:
-            await self.redis.sadd("global_custom_triggers", trigger_word)
+            await self.redis.sadd("global_custom_triggers", trigger_word)  # type: ignore[misc]
             return True, "Локацію додано"
 
         return False, "⚠️ Не вдалося зберегти кастомну локацію."
@@ -54,19 +54,19 @@ class UserService:
         await remove_user_trigger(self.session, user_id, trigger_word)
 
         user = await get_or_create_user(self.session, user_id)
-        await self.session.refresh(user, attribute_names=['triggers_rel'])
+        await self.session.refresh(user, attribute_names=["triggers_rel"])
 
         stmt = select(exists().where(UserTrigger.trigger_word == trigger_word))
         res = await self.session.execute(stmt)
         if not res.scalar():
-            await self.redis.srem("global_custom_triggers", trigger_word)
+            await self.redis.srem("global_custom_triggers", trigger_word)  # type: ignore[misc]
 
         return True, "Локацію видалено"
 
     async def apply_mute_preset(self, user_id: int, preset: str) -> str:
         """Розраховує час глушіння, координує запис в БД та синхронізує кэш Redis."""
-        now_utc = datetime.now(timezone.utc)
-        until: Optional[datetime] = None
+        now_utc = datetime.now(UTC)
+        until: datetime | None = None
         ttl_seconds = 0
         text_reply = ""
 
@@ -87,7 +87,7 @@ class UserService:
             kyiv_target = kyiv_now.replace(hour=7, minute=0, second=0, microsecond=0)
             if kyiv_now >= kyiv_target:
                 kyiv_target += timedelta(days=1)
-            until = kyiv_target.astimezone(timezone.utc)
+            until = kyiv_target.astimezone(UTC)
             ttl_seconds = int((until - now_utc).total_seconds())
             text_reply = "Сповіщення вимкнено до ранку"
         else:
@@ -99,7 +99,7 @@ class UserService:
 
     async def acknowledge_alert(self, user_id: int) -> str:
         """Тимчасово глушить сповіщення на 10 хвилин при підтвердженні сигналу."""
-        until = datetime.now(timezone.utc) + timedelta(minutes=10)
+        until = datetime.now(UTC) + timedelta(minutes=10)
 
         await update_user_mute(self.session, user_id, until)
         await self.redis.set(f"user_mute:{user_id}", "1", ex=600)

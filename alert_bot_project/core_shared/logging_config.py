@@ -1,8 +1,9 @@
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
+
 from alert_bot_project.core_shared.config import config
 
 
@@ -14,12 +15,12 @@ class StructuredJsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         log_payload = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "component": record.name,
             "message": record.getMessage(),
             "process_id": record.process,
-            "thread_name": record.threadName
+            "thread_name": record.threadName,
         }
 
         if record.exc_info:
@@ -31,7 +32,7 @@ class StructuredJsonFormatter(logging.Formatter):
         return json.dumps(log_payload, ensure_ascii=False)
 
 
-def setup_logging(service_name: str):
+def setup_logging(service_name: str) -> None:
     """
     Orchestrates centralized dual-channel logging topologies.
     Routes clean human-readable text to stdout and safe structural JSON to rolling files.
@@ -46,8 +47,7 @@ def setup_logging(service_name: str):
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
     console_formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
@@ -57,10 +57,7 @@ def setup_logging(service_name: str):
         file_path = os.path.join(config.LOG_DIR, f"{service_name}.json.log")
 
         file_handler = RotatingFileHandler(
-            filename=file_path,
-            maxBytes=config.LOG_MAX_BYTES,
-            backupCount=config.LOG_BACKUP_COUNT,
-            encoding="utf-8"
+            filename=file_path, maxBytes=config.LOG_MAX_BYTES, backupCount=config.LOG_BACKUP_COUNT, encoding="utf-8"
         )
         file_handler.setLevel(log_level)
         file_handler.setFormatter(StructuredJsonFormatter())

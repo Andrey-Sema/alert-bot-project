@@ -17,7 +17,9 @@ class Settings(BaseSettings):
 
     # ✅ ФИКС: Добавлены строгие диапазоны портов (ge=1024, le=65535) для предотвращения системных сбоев
     METRICS_PORT_WORKER: int = Field(8000, ge=1024, le=65535, description="Prometheus metrics port for worker service")
-    METRICS_PORT_SCRAPER: int = Field(8001, ge=1024, le=65535, description="Prometheus metrics port for scraper service")
+    METRICS_PORT_SCRAPER: int = Field(
+        8001, ge=1024, le=65535, description="Prometheus metrics port for scraper service"
+    )
     METRICS_PORT_BOT: int = Field(8002, ge=1024, le=65535, description="Prometheus metrics port for bot UI service")
 
     # Quiet Hours (Night Mode) Settings
@@ -40,21 +42,22 @@ class Settings(BaseSettings):
     LOG_BACKUP_COUNT: int = Field(5, description="Ceiling buffer count of historical rotated log files to retain")
 
     # Fix: Removed magic numbers by adding configurable network threshold parameters
-    TELEGRAM_MAX_RETRY_SECONDS: int = Field(180, description="Maximum total allowed cumulative sleep duration for Telegram 429 backoff")
+    TELEGRAM_MAX_RETRY_SECONDS: int = Field(
+        180, description="Maximum total allowed cumulative sleep duration for Telegram 429 backoff"
+    )
 
     # ✅ ФИКС: Модель-валидатор для атомарной проверки уникальности портов на этапе инициализации контейнера
     @model_validator(mode="after")
     def validate_unique_ports(self) -> "Settings":
         ports = [self.METRICS_PORT_WORKER, self.METRICS_PORT_SCRAPER, self.METRICS_PORT_BOT]
         if len(ports) != len(set(ports)):
-            raise ValueError(f"Metrics ports must be completely unique to prevent internal network conflicts. Provided ports: {ports}")
+            raise ValueError(
+                f"Metrics ports must be completely unique to prevent internal network conflicts. "
+                f"Provided ports: {ports}"
+            )
         return self
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
 config = Settings()

@@ -1,16 +1,18 @@
 import asyncio
 import logging
-import signal
 import os
-from pyrogram import Client, filters
+import signal
+
+from pyrogram import Client, filters  # type: ignore[attr-defined]
 from pyrogram.types import Message
 
 from alert_bot_project.core_shared.config import config
-from alert_bot_project.core_shared.schemas import AlertMessage
-from alert_bot_project.scraper.publisher import RedisPublisher
-from alert_bot_project.core_shared.metrics import start_metrics_server, SCRAPER_MESSAGES, SCRAPER_ERRORS
+
 # ✅ ФИКС 1: Импортируем наш централизованный логгер проекта
 from alert_bot_project.core_shared.logging_config import setup_logging
+from alert_bot_project.core_shared.metrics import SCRAPER_ERRORS, SCRAPER_MESSAGES, start_metrics_server
+from alert_bot_project.core_shared.schemas import AlertMessage
+from alert_bot_project.scraper.publisher import RedisPublisher
 
 # ✅ ФИКС 1: Заменяем дефолтный basicConfig на структурированный ротационный логгер.
 # Теперь логи скрейпера будут чисто писаться в JSON-формате в файл /data/logs/scraper.json.log
@@ -22,26 +24,16 @@ SESSION_DIR = "/data/session"
 # Поддержка безопасных In-Memory сессий для деплоя
 session_str = os.getenv("PYROGRAM_SESSION_STRING")
 if session_str:
-    app = Client(
-        name="twink_account",
-        session_string=session_str,
-        api_id=config.API_ID,
-        api_hash=config.API_HASH
-    )
+    app = Client(name="twink_account", session_string=session_str, api_id=config.API_ID, api_hash=config.API_HASH)
 else:
-    app = Client(
-        name="twink_account",
-        api_id=config.API_ID,
-        api_hash=config.API_HASH,
-        workdir=SESSION_DIR
-    )
+    app = Client(name="twink_account", api_id=config.API_ID, api_hash=config.API_HASH, workdir=SESSION_DIR)
 
 publisher = RedisPublisher()
 shutdown_event = asyncio.Event()
 
 
-@app.on_message(filters.chat(config.GROUP_ID) & (filters.text | filters.caption))
-async def handle_channel_post(client: Client, message: Message):
+@app.on_message(filters.chat(config.GROUP_ID) & (filters.text | filters.caption))  # type: ignore[misc]
+async def handle_channel_post(client: Client, message: Message) -> None:
     raw_text = message.text or message.caption
     if not raw_text:
         return
@@ -50,11 +42,7 @@ async def handle_channel_post(client: Client, message: Message):
     SCRAPER_MESSAGES.inc()
 
     try:
-        alert_payload = AlertMessage(
-            message_id=message.id,
-            chat_id=message.chat.id,
-            raw_text=raw_text
-        )
+        alert_payload = AlertMessage(message_id=message.id, chat_id=message.chat.id, raw_text=raw_text)
     except Exception:
         logger.exception("Payload validation failed for message ID: %s, skipping", message.id)
         return
@@ -71,15 +59,20 @@ async def handle_channel_post(client: Client, message: Message):
             break
         except Exception as exc:
             SCRAPER_ERRORS.inc()
-            wait_time = 2 ** attempt
-            logger.error("Failed downstream message transmission (attempt %d/%d): %s. Retrying in %ds...",
-                         attempt + 1, max_retries, exc, wait_time)
+            wait_time = 2**attempt
+            logger.error(
+                "Failed downstream message transmission (attempt %d/%d): %s. Retrying in %ds...",
+                attempt + 1,
+                max_retries,
+                exc,
+                wait_time,
+            )
             await asyncio.sleep(wait_time)
     else:
         logger.critical("🚨 MESSAGE PERMANENTLY LOST after %d retries! Message ID: %s", max_retries, message.id)
 
 
-async def stop_services():
+async def stop_services() -> None:
     logger.info("Initiating graceful teardown protocol stack...")
     try:
         await app.stop()
@@ -94,7 +87,7 @@ async def stop_services():
     shutdown_event.set()
 
 
-def setup_signal_handlers():
+def setup_signal_handlers() -> None:
     try:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -103,7 +96,7 @@ def setup_signal_handlers():
         pass
 
 
-async def main():
+async def main() -> None:
     start_metrics_server(config.METRICS_PORT_SCRAPER)
 
     setup_signal_handlers()

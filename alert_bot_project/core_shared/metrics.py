@@ -1,6 +1,7 @@
-import sys
 import logging
-from prometheus_client import start_http_server, Counter, Gauge, Histogram
+import sys
+
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 logger = logging.getLogger("core_shared.metrics")
 
@@ -15,8 +16,9 @@ DLQ_SIZE = Gauge("worker_dlq_size", "Current absolute depth of the Dead Letter Q
 PROCESSING_TIME = Histogram(
     "worker_processing_duration_seconds",
     "Time spent analyzing text, querying DB, and generating target user lists",
-    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
 )
+
 
 def start_metrics_server(port: int) -> None:
     """Initializes the lightweight Prometheus exporter HTTP server."""

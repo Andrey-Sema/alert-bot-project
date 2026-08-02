@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -8,8 +9,9 @@ import re
 import signal
 import socket
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
@@ -24,7 +26,11 @@ from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.constants import ALERT_FIRST, KYIV_TZ
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import (
-    start_metrics_server, ALERTS_PROCESSED, PROCESSING_TIME, DLQ_SIZE, WORKER_ERRORS
+    ALERTS_PROCESSED,
+    DLQ_SIZE,
+    PROCESSING_TIME,
+    WORKER_ERRORS,
+    start_metrics_server,
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
@@ -79,7 +85,7 @@ class CustomTriggerMatcher:
     """
 
     def __init__(self) -> None:
-        self._pattern: Optional[re.Pattern[str]] = None
+        self._pattern: re.Pattern[str] | None = None
         self._phrases_by_group: dict[str, str] = {}
         self.last_hash = ""
         self._lock = asyncio.Lock()
@@ -90,14 +96,11 @@ class CustomTriggerMatcher:
 
         async with self._lock:
             # noinspection PyTypeChecker
-            current_hash = hashlib.md5(
-                "".join(sorted(global_custom)).encode(), usedforsecurity=False
-            ).hexdigest()
+            current_hash = hashlib.md5("".join(sorted(global_custom)).encode(), usedforsecurity=False).hexdigest()
             if current_hash != self.last_hash:
                 self._phrases_by_group = {f"g{i}": str(t) for i, t in enumerate(global_custom)}
                 alternation = "|".join(
-                    f"(?P<{group}>{re.escape(phrase)}\\w{{0,3}})"
-                    for group, phrase in self._phrases_by_group.items()
+                    f"(?P<{group}>{re.escape(phrase)}\\w{{0,3}})" for group, phrase in self._phrases_by_group.items()
                 )
                 self._pattern = re.compile(rf"{_WORD_BOUNDARY}(?:{alternation}){_WORD_BOUNDARY_END}")
                 self.last_hash = current_hash
@@ -132,7 +135,7 @@ async def check_official_air_alarm(redis_client: Redis) -> bool:
     try:
         cached = await redis_client.get(OFFICIAL_ALARM_KEY)
         if cached is not None:
-            return cached == "1"
+            return bool(cached == "1")
         return config.OFFICIAL_ALARM_FAILSAFE
     except RedisError:
         logger.exception("Ошибка при чтении статуса официальной тревоги из Redis")
@@ -208,20 +211,19 @@ async def monitor_dlq_backlog(redis_client: Redis) -> None:
         except RedisError:
             logger.exception("Error checking DLQ depth")
 
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=60.0)
-        except asyncio.TimeoutError:
-            pass
 
 
 # =========================================================================
 #  РЕЗОЛВІНГ ОДЕРЖУВАЧІВ (декомпозовано з єдиної функції складністю 51 -> дрібні шматки)
 # =========================================================================
 
-async def _try_get_cached_targets(redis_client: Redis, cache_hash_key: str) -> Optional[list[int]]:
+
+async def _try_get_cached_targets(redis_client: Redis, cache_hash_key: str) -> list[int] | None:
     cached = await redis_client.get(cache_hash_key)
     if cached:
-        return json.loads(cached)
+        return cast(list[int], json.loads(cached))
     return None
 
 
@@ -237,9 +239,7 @@ async def _fetch_targets_from_db(categories: set[str], trigger_words: set[str]) 
         return [u.user_id for u in target_users]
 
 
-async def _handle_db_failure(
-    redis_client: Redis, redis_msg_id: str, raw_json: str, db_err: Exception
-) -> None:
+async def _handle_db_failure(redis_client: Redis, redis_msg_id: str, raw_json: str, db_err: Exception) -> None:
     """Рахує ретраї конкретного повідомлення і зносить його в DLQ після 5 невдалих спроб."""
     retry_key = f"retry_count:{redis_msg_id}"
     current_retries = await redis_client.incr(retry_key)
@@ -299,14 +299,19 @@ async def _resolve_target_users(
 
         if await _acquire_cache_build_lock(redis_client, lock_key, lock_token):
             return await _build_and_cache_targets(
-                redis_client, cache_hash_key, lock_key, lock_token,
-                categories, trigger_words, redis_msg_id, raw_json, release_lock_script,
+                redis_client,
+                cache_hash_key,
+                lock_key,
+                lock_token,
+                categories,
+                trigger_words,
+                redis_msg_id,
+                raw_json,
+                release_lock_script,
             )
 
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=0.1)
-        except asyncio.TimeoutError:
-            pass
 
     # Ліміт спроб вичерпано, ніхто так і не звільнив лок вчасно —
     # читаємо з БД напряму без кешування (як і в початковій реалізації).
@@ -317,9 +322,8 @@ async def _resolve_target_users(
 #  ОБРОБКА ОДНОГО ПОВІДОМЛЕННЯ (декомпозовано з складністю 51 -> дрібні шматки)
 # =========================================================================
 
-async def _validate_payload(
-    redis_client: Redis, redis_msg_id: str, raw_json: str
-) -> Optional[AlertMessage]:
+
+async def _validate_payload(redis_client: Redis, redis_msg_id: str, raw_json: str) -> AlertMessage | None:
     try:
         alert_data = AlertMessage.model_validate_json(raw_json)
     except (ValidationError, ValueError):
@@ -327,14 +331,14 @@ async def _validate_payload(
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return None
 
-    if (datetime.now(timezone.utc) - alert_data.timestamp).total_seconds() > 600:
+    if (datetime.now(UTC) - alert_data.timestamp).total_seconds() > 600:
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return None
 
     return alert_data
 
 
-async def _acquire_dedup_lock(redis_client: Redis, alert_data: AlertMessage) -> Optional[str]:
+async def _acquire_dedup_lock(redis_client: Redis, alert_data: AlertMessage) -> str | None:
     """Повертає ключ дедуплікації, якщо повідомлення ще не оброблялося, інакше None."""
     dedup_key = f"processed_msg:{alert_data.chat_id}:{alert_data.message_id}"
     acquired = await redis_client.set(dedup_key, "1", ex=600, nx=True)
@@ -343,7 +347,7 @@ async def _acquire_dedup_lock(redis_client: Redis, alert_data: AlertMessage) -> 
 
 def _resolve_trigger_words(
     analysis: dict[str, set[str]], matched_custom: list[str], official_alarm_active: bool
-) -> Optional[set[str]]:
+) -> set[str] | None:
     """
     Вирішує, чи повідомлення варте розсилки, і повертає фінальний набір
     trigger_words для пошуку одержувачів, або None — якщо розсилку треба
@@ -355,9 +359,7 @@ def _resolve_trigger_words(
         якщо їх немає, але є розпізнана категорія загрози — ескалюємо на
         загальноміських підписників (ключ "city").
     """
-    if not official_alarm_active and (
-        not analysis["categories"] or (not analysis["locations"] and not matched_custom)
-    ):
+    if not official_alarm_active and (not analysis["categories"] or (not analysis["locations"] and not matched_custom)):
         return None
 
     if official_alarm_active and not analysis["locations"] and not matched_custom:
@@ -374,7 +376,7 @@ def _resolve_trigger_words(
 async def _filter_muted_users(redis_client: Redis, user_ids: list[int]) -> list[int]:
     mute_keys = [f"user_mute:{u}" for u in user_ids]
     mutes = await redis_client.mget(mute_keys)
-    return [u for u, m in zip(user_ids, mutes) if not m]
+    return [u for u, m in zip(user_ids, mutes, strict=False) if not m]
 
 
 def _dispatch_alerts(broadcaster: Broadcaster, active_users: list[int]) -> None:
@@ -404,7 +406,7 @@ async def process_single_stream_payload(
         analysis = TextProcessor.parse_message(alert_data.raw_text)
         normalized_text = TextProcessor.normalize(alert_data.raw_text)
 
-        global_custom = await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY)
+        global_custom = await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY)  # type: ignore[misc]
         matched_custom = await trigger_matcher.get_matches(normalized_text, global_custom)
         official_alarm_active = await check_official_air_alarm(redis_client)
 
@@ -421,13 +423,18 @@ async def process_single_stream_payload(
         sorted_triggers = sorted(trigger_words)
         # noinspection PyTypeChecker
         checksum = hashlib.md5(
-            f"cats:{sorted_cats}|triggers:{sorted_triggers}".encode("utf-8"), usedforsecurity=False
+            f"cats:{sorted_cats}|triggers:{sorted_triggers}".encode(), usedforsecurity=False
         ).hexdigest()
 
         try:
             user_ids_list = await _resolve_target_users(
-                redis_client, checksum, analysis["categories"], trigger_words,
-                redis_msg_id, raw_json, release_lock_script,
+                redis_client,
+                checksum,
+                analysis["categories"],
+                trigger_words,
+                redis_msg_id,
+                raw_json,
+                release_lock_script,
             )
         except SQLAlchemyError:
             await redis_client.delete(dedup_key)
@@ -458,14 +465,17 @@ async def auto_claim_pending_tasks(
     next_start_id = "0-0"
     while not shutdown_event.is_set():
         try:
-            try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=30 + random.uniform(0.0, 10.0))
-            except asyncio.TimeoutError:
-                pass
+            jitter = random.uniform(0.0, 10.0)  # noqa: S311 # nosec B311 -- джиттер таймауту, не криптографія
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(shutdown_event.wait(), timeout=30 + jitter)
 
             res = await redis_client.xautoclaim(
-                name=STREAM_NAME, groupname=GROUP_NAME, consumername=CONSUMER_NAME,
-                min_idle_time=60000, start_id=next_start_id, count=10
+                name=STREAM_NAME,
+                groupname=GROUP_NAME,
+                consumername=CONSUMER_NAME,
+                min_idle_time=60000,
+                start_id=next_start_id,
+                count=10,
             )
             if res:
                 next_start_id = res[0]
@@ -490,6 +500,7 @@ async def auto_claim_pending_tasks(
 #  ГОЛОВНИЙ ЦИКЛ (декомпозовано з складністю 22 -> дрібні шматки)
 # =========================================================================
 
+
 async def _drain_pending_backlog(
     redis_client: Redis, broadcaster: Broadcaster, release_lock_script: ReleaseLockScript
 ) -> None:
@@ -498,8 +509,7 @@ async def _drain_pending_backlog(
     while True:
         try:
             backlog_data = await redis_client.xreadgroup(
-                groupname=GROUP_NAME, consumername=CONSUMER_NAME,
-                streams={STREAM_NAME: "0"}, count=100, block=10
+                groupname=GROUP_NAME, consumername=CONSUMER_NAME, streams={STREAM_NAME: "0"}, count=100, block=10
             )
             if not backlog_data or not backlog_data[0][1]:
                 break
@@ -522,28 +532,21 @@ async def _handle_stream_response_error(redis_client: Redis, error: ResponseErro
     if "NOGROUP" in str(error):
         logger.warning("Consumer group missing. Re-initializing...")
         await init_redis_consumer_group(redis_client)
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            pass
     else:
         WORKER_ERRORS.inc()
         logger.exception("Core engine execution loop ResponseError")
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            pass
 
 
-async def _consume_loop(
-    redis_client: Redis, broadcaster: Broadcaster, release_lock_script: ReleaseLockScript
-) -> None:
+async def _consume_loop(redis_client: Redis, broadcaster: Broadcaster, release_lock_script: ReleaseLockScript) -> None:
     """Основний нескінченний цикл читання нових повідомлень зі стріму (">")."""
     while not shutdown_event.is_set():
         try:
             streams_data = await redis_client.xreadgroup(
-                groupname=GROUP_NAME, consumername=CONSUMER_NAME,
-                streams={STREAM_NAME: ">"}, count=5, block=1000
+                groupname=GROUP_NAME, consumername=CONSUMER_NAME, streams={STREAM_NAME: ">"}, count=5, block=1000
             )
             if not streams_data:
                 continue
@@ -563,10 +566,8 @@ async def _consume_loop(
             # одиничний збій ітерації не повинен вбивати весь воркер-процес.
             WORKER_ERRORS.inc()
             logger.exception("Core engine execution loop error")
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(shutdown_event.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
-                pass
 
 
 async def main() -> None:
@@ -586,9 +587,7 @@ async def main() -> None:
     broadcaster.start()
 
     delayed_daemon = asyncio.create_task(broadcaster.process_delayed_alerts())
-    recovery_daemon = asyncio.create_task(
-        auto_claim_pending_tasks(redis_client, broadcaster, release_lock_script)
-    )
+    recovery_daemon = asyncio.create_task(auto_claim_pending_tasks(redis_client, broadcaster, release_lock_script))
     dlq_daemon = asyncio.create_task(monitor_dlq_backlog(redis_client))
 
     alarm_poller = AlarmStatePoller(redis_client)
@@ -614,15 +613,11 @@ async def main() -> None:
     dlq_daemon.cancel()
     alarm_daemon.cancel()
 
-    await asyncio.gather(
-        delayed_daemon, recovery_daemon, dlq_daemon, alarm_daemon, return_exceptions=True
-    )
+    await asyncio.gather(delayed_daemon, recovery_daemon, dlq_daemon, alarm_daemon, return_exceptions=True)
     await broadcaster.close()
 
-    try:
+    with contextlib.suppress(RedisError):
         await redis_client.xgroup_delconsumer(STREAM_NAME, GROUP_NAME, CONSUMER_NAME)
-    except RedisError:
-        pass
 
     await redis_client.close()
     await bot.session.close()

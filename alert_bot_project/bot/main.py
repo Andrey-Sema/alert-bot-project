@@ -1,19 +1,19 @@
 import asyncio
 import logging
-from alert_bot_project.core_shared.logging_config import setup_logging
-from alert_bot_project.bot.loader import bot, dp, redis_client
-from alert_bot_project.bot.handlers import start, settings
-from alert_bot_project.bot.middlewares.db import DatabaseMiddleware
-from alert_bot_project.core_shared.metrics import start_metrics_server
-from alert_bot_project.core_shared.config import config
-from alert_bot_project.bot.middlewares.throttling import ThrottlingMiddleware
 
+from alert_bot_project.bot.handlers import settings, start
+from alert_bot_project.bot.loader import bot, dp, redis_client
+from alert_bot_project.bot.middlewares.db import DatabaseMiddleware
+from alert_bot_project.bot.middlewares.throttling import ThrottlingMiddleware
+from alert_bot_project.core_shared.config import config
+from alert_bot_project.core_shared.logging_config import setup_logging
+from alert_bot_project.core_shared.metrics import start_metrics_server
 
 setup_logging("tg_bot_ui")
 logger = logging.getLogger("bot.main")
 
 
-async def main():
+async def main() -> None:
     logger.info("Starting Bot UI subsystem initialization sequence...")
 
     # Старт сервера метрик (если порт занят, внутри сработает Fail-Fast sys.exit(1))

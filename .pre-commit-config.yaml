@@ -36,8 +36,10 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
-        # types-redis необходим для тайп-чекинга асинхронного клиента redis.asyncio.Redis
-        additional_dependencies: [ types-redis, pydantic, sqlalchemy ]
+        # ✅ ФИКС: types-redis убран — это устаревший пакет заглушек, конфликтующий
+        # с нативными inline-типами (PEP 561), которые redis==5.2.1 уже несёт сам по
+        # себе; с ним mypy выдавал полсотни ложных ошибок вместо нуля.
+        additional_dependencies: [ pydantic, sqlalchemy ]
         description: "Строгая статическая проверка типов Python"
 
   - repo: https://github.com/PyCQA/bandit
