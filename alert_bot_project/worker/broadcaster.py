@@ -15,12 +15,11 @@ from redis.asyncio import Redis
 
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.constants import (
-    ALERT_DELAY_1,
-    ALERT_DELAY_2,
     ALERT_SECOND,
     ALERT_THIRD,
     DEFAULT_REPEAT_COUNT,
     KYIV_TZ,
+    REPEAT_INTERVAL_SECONDS,
 )
 
 logger = logging.getLogger("worker.broadcaster")
@@ -152,9 +151,9 @@ class Broadcaster:
             now_unix = int(time.time())
             zadd_mapping: dict[str, int] = {}
 
-            # Крок 2 приходить через ALERT_DELAY_1, кожен наступний крок — ще через ALERT_DELAY_2
+            # Кожен наступний крок — ще на REPEAT_INTERVAL_SECONDS пізніше за перше сповіщення
             for step in range(2, repeat_count + 1):
-                delay = ALERT_DELAY_1 + (step - 2) * ALERT_DELAY_2
+                delay = (step - 1) * REPEAT_INTERVAL_SECONDS
                 text = ALERT_SECOND if step == 2 else ALERT_THIRD
                 task = {"chat_id": chat_id, "step": step, "text": text, "silent": disable_notification}
                 zadd_mapping[json.dumps(task)] = now_unix + delay

@@ -44,6 +44,11 @@ class TestBroadcasterDelayedLogic:
             assert 3 in steps
             assert 4 not in steps
 
+            base_time = 1700000000
+            scores_by_step = {json.loads(k)["step"]: score for k, score in mapping.items()}
+            assert scores_by_step[2] == base_time + 10
+            assert scores_by_step[3] == base_time + 20
+
     @pytest.mark.asyncio
     async def test_execute_scheduling_honors_custom_repeat_count(
         self, mock_bot: AsyncMock, mock_redis: MagicMock
@@ -60,6 +65,15 @@ class TestBroadcasterDelayedLogic:
 
             steps = sorted(json.loads(k)["step"] for k in mapping)
             assert steps == [2, 3, 4, 5]
+
+            base_time = 1700000000
+            scores_by_step = {json.loads(k)["step"]: score for k, score in mapping.items()}
+            assert scores_by_step == {
+                2: base_time + 10,
+                3: base_time + 20,
+                4: base_time + 30,
+                5: base_time + 40,
+            }
 
     @pytest.mark.asyncio
     async def test_process_single_delayed_task_corrupted_json(self, mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
