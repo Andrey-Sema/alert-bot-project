@@ -134,9 +134,7 @@ def build_repeat_options_keyboard(current_count: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for option in REPEAT_COUNT_OPTIONS:
         status_marker = "✅" if option == current_count else "🔁"
-        kb.button(
-            text=f"{status_marker} {option} повторів", callback_data=RepeatCountCallback(count=option).pack()
-        )
+        kb.button(text=f"{status_marker} {option} повторів", callback_data=RepeatCountCallback(count=option).pack())
     kb.button(text=BACK_BUTTON_TEXT, callback_data=MENU_MAIN)
     kb.adjust(2)
     return kb.as_markup()
