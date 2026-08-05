@@ -33,8 +33,7 @@ from alert_bot_project.core_shared.callbacks import (
     RepeatCountCallback,
     ThreatCategoryCallback,
 )
-from alert_bot_project.core_shared.constants import REPEAT_COUNT_OPTIONS
-from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
+from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS, REPEAT_COUNT_OPTIONS
 from alert_bot_project.core_shared.text_processor import COMPILED_LOCATIONS, TextProcessor
 from alert_bot_project.database.crud import get_or_create_user
 from alert_bot_project.services.user_service import UserService
