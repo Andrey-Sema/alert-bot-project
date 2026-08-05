@@ -156,7 +156,7 @@ CREATE TABLE user_triggers (
 
 ### 🛰️ Scraper (`alert_bot_project/scraper/`)
 
-Реалізований на [Pyrogram](https://docs.pyrogram.org/) — неофіційному userbot-клієнті Telegram. Підписується на вказаний канал через `filters.chat(GROUP_ID)` і відправляє кожен новий пост у Redis Stream.
+Реалізований на [Pyrogram](https://docs.pyrogram.org/) — неофіційному userbot-клієнті Telegram. Підписується на один або кілька вказаних каналів через `filters.chat(GROUP_IDS)` і відправляє кожен новий пост у Redis Stream.
 
 - Підтримка `PYROGRAM_SESSION_STRING` для stateless деплою в PaaS/K8s
 - Exponential backoff при збоях публікації (3 спроби, 2^n секунд)
@@ -310,7 +310,7 @@ BOT_TOKEN=1234567890:ABCdefGhIJKlmNoPQRsTUVwXyZ     # Токен від @BotFath
 ADMIN_CHAT_ID=987654321                              # Ваш Telegram ID для Alertmanager
 API_ID=1234567                                       # API ID з my.telegram.org
 API_HASH=abcdef0123456789abcdef0123456789           # API Hash з my.telegram.org
-GROUP_ID=-1001234567890                              # ID цільового Telegram-каналу
+GROUP_IDS=-1001234567890,-1009876543210              # ID цільових Telegram-каналів (через кому)
 
 # Опціонально: рядок сесії Pyrogram для stateless деплою (PaaS/K8s)
 PYROGRAM_SESSION_STRING=

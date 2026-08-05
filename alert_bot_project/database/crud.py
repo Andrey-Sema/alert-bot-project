@@ -65,6 +65,12 @@ async def update_user_mute(session: AsyncSession, user_id: int, muted_until: dat
     user.muted_until = muted_until
 
 
+async def update_user_repeat_count(session: AsyncSession, user_id: int, repeat_count: int) -> None:
+    """Обновить количество повторов сигнала тревоги."""
+    user = await get_or_create_user(session, user_id)
+    user.repeat_count = repeat_count
+
+
 async def get_users_by_trigger_and_category(
     session: AsyncSession, category_names: set[str], trigger_words: set[str]
 ) -> Sequence[UserSettings]:

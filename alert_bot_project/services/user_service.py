@@ -12,6 +12,7 @@ from alert_bot_project.database.crud import (
     get_or_create_user,
     remove_user_trigger,
     update_user_mute,
+    update_user_repeat_count,
 )
 from alert_bot_project.database.models import UserTrigger
 
@@ -96,6 +97,12 @@ class UserService:
         await update_user_mute(self.session, user_id, until)
         await self.redis.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
         return text_reply
+
+    async def set_repeat_count(self, user_id: int, repeat_count: int) -> str:
+        """Зберігає обрану кількість повторів сигналу тривоги в БД і синхронізує кэш Redis."""
+        await update_user_repeat_count(self.session, user_id, repeat_count)
+        await self.redis.set(f"user_repeat_count:{user_id}", str(repeat_count))
+        return f"Кількість повторів встановлено: {repeat_count}"
 
     async def acknowledge_alert(self, user_id: int) -> str:
         """Тимчасово глушить сповіщення на 10 хвилин при підтвердженні сигналу."""

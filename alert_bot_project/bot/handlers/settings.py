@@ -14,12 +14,15 @@ from alert_bot_project.bot.keyboards.builders import (
     MENU_CUSTOM_MANAGE,
     MENU_MUTE,
     MENU_POTVORY,
+    MENU_REPEATS,
     build_custom_triggers_management_keyboard,
     build_group_selection_menu,
     build_locations_paginated_keyboard,
     build_mute_options_keyboard,
+    build_repeat_options_keyboard,
     build_threat_categories_keyboard,
 )
+from alert_bot_project.bot.keyboards.messages import REPEATS_INFO_TEXT
 from alert_bot_project.bot.loader import redis_client
 from alert_bot_project.core_shared.callbacks import (
     CustomActionCallback,
@@ -27,8 +30,10 @@ from alert_bot_project.core_shared.callbacks import (
     GroupNavCallback,
     LocationToggleCallback,
     MutePresetCallback,
+    RepeatCountCallback,
     ThreatCategoryCallback,
 )
+from alert_bot_project.core_shared.constants import REPEAT_COUNT_OPTIONS
 from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
 from alert_bot_project.core_shared.text_processor import COMPILED_LOCATIONS, TextProcessor
 from alert_bot_project.database.crud import get_or_create_user
@@ -144,6 +149,34 @@ async def process_mute_action(
         await callback.answer(text=msg)
     except ValueError as e:
         await callback.answer(str(e), show_alert=True)
+
+
+@router.callback_query(F.data == MENU_REPEATS)
+async def show_repeat_options(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    assert callback.from_user is not None
+    user = await get_or_create_user(db_session, callback.from_user.id)
+    await cast(Message, callback.message).edit_text(
+        text=REPEATS_INFO_TEXT, reply_markup=build_repeat_options_keyboard(user.repeat_count)
+    )
+    await callback.answer()
+
+
+@router.callback_query(RepeatCountCallback.filter())
+async def process_repeat_action(
+    callback: CallbackQuery, callback_data: RepeatCountCallback, db_session: AsyncSession
+) -> None:
+    if callback_data.count not in REPEAT_COUNT_OPTIONS:
+        await callback.answer("Помилка: невірна кількість повторів", show_alert=True)
+        return
+
+    assert callback.from_user is not None
+    service = UserService(db_session, redis_client)
+    await service.set_repeat_count(callback.from_user.id, callback_data.count)
+
+    await cast(Message, callback.message).edit_reply_markup(
+        reply_markup=build_repeat_options_keyboard(callback_data.count)
+    )
+    await callback.answer(text=f"Кількість повторів встановлено: {callback_data.count}")
 
 
 @router.callback_query(F.data == CUSTOM_ADD)

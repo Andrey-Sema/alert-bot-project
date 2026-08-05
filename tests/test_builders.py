@@ -8,6 +8,7 @@ from alert_bot_project.bot.keyboards.builders import (
     build_locations_paginated_keyboard,
     build_main_menu,
     build_mute_options_keyboard,
+    build_repeat_options_keyboard,
     build_threat_categories_keyboard,
 )
 from alert_bot_project.core_shared.constants import ODESA_LOCS
@@ -17,7 +18,7 @@ class TestKeyboardBuilders:
     def test_build_main_menu(self):
         kb = build_main_menu()
         assert isinstance(kb, InlineKeyboardMarkup)
-        assert len(kb.inline_keyboard) == 5
+        assert len(kb.inline_keyboard) == 6
         assert kb.inline_keyboard[0][0].callback_data == "menu:choose_group"
 
     def test_build_group_selection_menu(self):
@@ -53,6 +54,15 @@ class TestKeyboardBuilders:
         assert len(kb.inline_keyboard) > 0
         # ✅ ФИКС: Из-за kb.adjust(2) кнопка "morning" находится в ряду 1, позиция 1
         assert "mute_set:morning" in kb.inline_keyboard[1][1].callback_data
+
+    def test_build_repeat_options_keyboard_marks_current_selection(self):
+        kb = build_repeat_options_keyboard(current_count=5)
+
+        selected_button = next(btn for row in kb.inline_keyboard for btn in row if "repeat_set:5" in btn.callback_data)
+        assert "✅" in selected_button.text
+
+        other_button = next(btn for row in kb.inline_keyboard for btn in row if "repeat_set:3" in btn.callback_data)
+        assert "✅" not in other_button.text
 
     def test_build_acknowledge_keyboard(self):
         kb = build_acknowledge_keyboard()

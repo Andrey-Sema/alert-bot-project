@@ -32,7 +32,7 @@ publisher = RedisPublisher()
 shutdown_event = asyncio.Event()
 
 
-@app.on_message(filters.chat(config.GROUP_ID) & (filters.text | filters.caption))  # type: ignore[misc]
+@app.on_message(filters.chat(config.GROUP_IDS) & (filters.text | filters.caption))  # type: ignore[misc]
 async def handle_channel_post(client: Client, message: Message) -> None:
     raw_text = message.text or message.caption
     if not raw_text:

@@ -57,7 +57,7 @@ jobs:
       env:
         # Подсовываем фейковые переменные для прохождения тестов конфигурации Pydantic
         BOT_TOKEN: "123456:fake_token"
-        GROUP_ID: "-100123456"
+        GROUP_IDS: "-100123456"
         API_ID: "123456"
         API_HASH: "fake_hash"
         DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"

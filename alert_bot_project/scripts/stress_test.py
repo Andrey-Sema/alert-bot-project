@@ -233,7 +233,7 @@ async def run_load_benchmark(
 def main() -> None:
     parser = argparse.ArgumentParser(description="OdesaAlert stress test — нагрузочный тест Redis Streams pipeline")
     parser.add_argument("--redis-url", default=None, help="Redis URL (по умолчанию из config)")
-    parser.add_argument("--group-id", type=int, default=None, help="Telegram GROUP_ID (по умолчанию из config)")
+    parser.add_argument("--group-id", type=int, default=None, help="Telegram GROUP_ID (по умолчанию первый из config)")
     parser.add_argument("--messages", type=int, default=2000, help="Количество сообщений (default: 2000)")
     parser.add_argument("--batch-size", type=int, default=None, help="Размер батча (default: auto)")
     parser.add_argument("--delay", type=float, default=0.0, help="Задержка между батчами в сек (default: 0)")
@@ -245,7 +245,7 @@ def main() -> None:
     from alert_bot_project.core_shared.config import config
 
     redis_url = args.redis_url or config.REDIS_URL
-    group_id = args.group_id or config.GROUP_ID
+    group_id = args.group_id or config.GROUP_IDS[0]
 
     exit_code = asyncio.run(
         run_load_benchmark(

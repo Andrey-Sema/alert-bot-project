@@ -1,11 +1,22 @@
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     # Telegram Bot Settings
     BOT_TOKEN: str = Field(..., description="Official UI bot token obtained from BotFather")
-    GROUP_ID: int = Field(..., description="Target channel or group ID to parse threat monitoring data from")
+    GROUP_IDS: Annotated[list[int], NoDecode] = Field(
+        ..., description="Comma-separated list of target channel/group IDs to parse threat monitoring data from"
+    )
+
+    @field_validator("GROUP_IDS", mode="before")
+    @classmethod
+    def parse_group_ids(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [int(item.strip()) for item in value.split(",") if item.strip()]
+        return value
 
     # Userbot (Pyrogram) Settings
     API_ID: int = Field(..., description="API ID from my.telegram.org")

@@ -7,6 +7,8 @@ from aiogram.types import CallbackQuery
 from alert_bot_project.bot.handlers.settings import (
     delete_custom_user_keyword,
     process_mute_action,
+    process_repeat_action,
+    show_repeat_options,
     toggle_location_trigger,
     toggle_threat_category,
 )
@@ -14,6 +16,7 @@ from alert_bot_project.core_shared.callbacks import (
     CustomActionCallback,
     LocationToggleCallback,
     MutePresetCallback,
+    RepeatCountCallback,
     ThreatCategoryCallback,
 )
 from alert_bot_project.database.models import UserSettings
@@ -88,6 +91,44 @@ class TestSettingsHandlersExtended:
         await process_mute_action(mock_callback, callback_data, db_session=mock_db_session)
 
         mock_callback.answer.assert_called_once_with("Кривой пресет", show_alert=True)
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.settings.get_or_create_user")
+    async def test_show_repeat_options_renders_current_selection(
+        self, mock_get_user: MagicMock, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
+        mock_get_user.return_value = UserSettings(user_id=12345, repeat_count=5)
+
+        await show_repeat_options(mock_callback, db_session=mock_db_session)
+
+        mock_callback.message.edit_text.assert_called_once()
+        _, kwargs = mock_callback.message.edit_text.call_args
+        selected_button = next(
+            btn for row in kwargs["reply_markup"].inline_keyboard for btn in row if "repeat_set:5" in btn.callback_data
+        )
+        assert "✅" in selected_button.text
+
+    @pytest.mark.asyncio
+    async def test_process_repeat_action_rejects_unknown_count(
+        self, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
+        callback_data = RepeatCountCallback(count=999)
+        await process_repeat_action(mock_callback, callback_data, db_session=mock_db_session)
+        mock_callback.answer.assert_called_once_with("Помилка: невірна кількість повторів", show_alert=True)
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.settings.UserService")
+    async def test_process_repeat_action_success(
+        self, mock_service_cls: MagicMock, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
+        mock_service = AsyncMock()
+        mock_service_cls.return_value = mock_service
+
+        callback_data = RepeatCountCallback(count=10)
+        await process_repeat_action(mock_callback, callback_data, db_session=mock_db_session)
+
+        mock_service.set_repeat_count.assert_called_once_with(12345, 10)
+        mock_callback.message.edit_reply_markup.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_delete_custom_user_keyword_empty_phrase(
