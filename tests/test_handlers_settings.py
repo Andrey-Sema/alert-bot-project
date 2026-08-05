@@ -8,6 +8,7 @@ from alert_bot_project.bot.handlers.settings import (
     delete_custom_user_keyword,
     process_mute_action,
     process_repeat_action,
+    send_alert_sound_sample,
     show_repeat_options,
     toggle_location_trigger,
     toggle_threat_category,
@@ -31,6 +32,7 @@ def mock_callback() -> AsyncMock:
     cb.message = AsyncMock()
     cb.message.edit_text = AsyncMock()
     cb.message.edit_reply_markup = AsyncMock()
+    cb.message.answer_audio = AsyncMock()
     return cb
 
 
@@ -129,6 +131,13 @@ class TestSettingsHandlersExtended:
 
         mock_service.set_repeat_count.assert_called_once_with(12345, 10)
         mock_callback.message.edit_reply_markup.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_alert_sound_sample_delivers_audio(self, mock_callback: AsyncMock) -> None:
+        await send_alert_sound_sample(mock_callback)
+
+        mock_callback.message.answer_audio.assert_called_once()
+        mock_callback.answer.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_delete_custom_user_keyword_empty_phrase(

@@ -27,6 +27,7 @@ MENU_REPEATS = "menu:repeats"
 MENU_INFO = "menu:info"
 CUSTOM_ADD = "custom:add"
 ALERT_ACK = "alert:ack"
+SOUND_SEND = "sound:send"
 
 # ✅ ФИКС С СОНАРОМ (python:S1192): Избавляемся от дублирования строковых литералов
 BACK_BUTTON_TEXT = "⬅️ Назад"
@@ -135,8 +136,9 @@ def build_repeat_options_keyboard(current_count: int) -> InlineKeyboardMarkup:
     for option in REPEAT_COUNT_OPTIONS:
         status_marker = "✅" if option == current_count else "🔁"
         kb.button(text=f"{status_marker} {option} повторів", callback_data=RepeatCountCallback(count=option).pack())
+    kb.button(text="🔊 Надіслати приклад сигналу", callback_data=SOUND_SEND)
     kb.button(text=BACK_BUTTON_TEXT, callback_data=MENU_MAIN)
-    kb.adjust(2)
+    kb.adjust(2, 2, 1, 1)
     return kb.as_markup()
 
 

@@ -1,10 +1,11 @@
 import html
 import logging
+from pathlib import Path
 from typing import cast
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alert_bot_project.bot.keyboards.builders import (
@@ -15,6 +16,7 @@ from alert_bot_project.bot.keyboards.builders import (
     MENU_MUTE,
     MENU_POTVORY,
     MENU_REPEATS,
+    SOUND_SEND,
     build_custom_triggers_management_keyboard,
     build_group_selection_menu,
     build_locations_paginated_keyboard,
@@ -22,7 +24,7 @@ from alert_bot_project.bot.keyboards.builders import (
     build_repeat_options_keyboard,
     build_threat_categories_keyboard,
 )
-from alert_bot_project.bot.keyboards.messages import REPEATS_INFO_TEXT
+from alert_bot_project.bot.keyboards.messages import REPEATS_INFO_TEXT, SOUND_SEND_CAPTION
 from alert_bot_project.bot.loader import redis_client
 from alert_bot_project.core_shared.callbacks import (
     CustomActionCallback,
@@ -40,6 +42,8 @@ from alert_bot_project.services.user_service import UserService
 
 logger = logging.getLogger("bot.handlers.settings")
 router = Router(name="settings_router")
+
+SOUND_ASSET_PATH = Path(__file__).resolve().parent.parent / "sounds" / "alert_siren.mp3"
 
 
 @router.callback_query(F.data == MENU_CHOOSE_GROUP)
@@ -176,6 +180,20 @@ async def process_repeat_action(
         reply_markup=build_repeat_options_keyboard(callback_data.count)
     )
     await callback.answer(text=f"Кількість повторів встановлено: {callback_data.count}")
+
+
+@router.callback_query(F.data == SOUND_SEND)
+async def send_alert_sound_sample(callback: CallbackQuery) -> None:
+    if not SOUND_ASSET_PATH.exists():
+        await callback.answer("Файл звуку тимчасово недоступний", show_alert=True)
+        return
+
+    await cast(Message, callback.message).answer_audio(
+        audio=FSInputFile(SOUND_ASSET_PATH),
+        title="OdesaAlert Siren",
+        caption=SOUND_SEND_CAPTION,
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == CUSTOM_ADD)
