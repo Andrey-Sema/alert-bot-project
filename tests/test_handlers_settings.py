@@ -7,6 +7,10 @@ from aiogram.types import CallbackQuery
 from alert_bot_project.bot.handlers.settings import (
     delete_custom_user_keyword,
     process_mute_action,
+    process_repeat_action,
+    send_selected_sound,
+    show_repeat_options,
+    show_sound_picker,
     toggle_location_trigger,
     toggle_threat_category,
 )
@@ -14,6 +18,8 @@ from alert_bot_project.core_shared.callbacks import (
     CustomActionCallback,
     LocationToggleCallback,
     MutePresetCallback,
+    RepeatCountCallback,
+    SoundSelectCallback,
     ThreatCategoryCallback,
 )
 from alert_bot_project.database.models import UserSettings
@@ -28,6 +34,7 @@ def mock_callback() -> AsyncMock:
     cb.message = AsyncMock()
     cb.message.edit_text = AsyncMock()
     cb.message.edit_reply_markup = AsyncMock()
+    cb.message.answer_audio = AsyncMock()
     return cb
 
 
@@ -88,6 +95,76 @@ class TestSettingsHandlersExtended:
         await process_mute_action(mock_callback, callback_data, db_session=mock_db_session)
 
         mock_callback.answer.assert_called_once_with("Кривой пресет", show_alert=True)
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.settings.get_or_create_user")
+    async def test_show_repeat_options_renders_current_selection(
+        self, mock_get_user: MagicMock, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
+        mock_get_user.return_value = UserSettings(user_id=12345, repeat_count=5)
+
+        await show_repeat_options(mock_callback, db_session=mock_db_session)
+
+        mock_callback.message.edit_text.assert_called_once()
+        _, kwargs = mock_callback.message.edit_text.call_args
+        selected_button = next(
+            btn for row in kwargs["reply_markup"].inline_keyboard for btn in row if "repeat_set:5" in btn.callback_data
+        )
+        assert "✅" in selected_button.text
+
+    @pytest.mark.asyncio
+    async def test_process_repeat_action_rejects_unknown_count(
+        self, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
+        callback_data = RepeatCountCallback(count=999)
+        await process_repeat_action(mock_callback, callback_data, db_session=mock_db_session)
+        mock_callback.answer.assert_called_once_with("Помилка: невірна кількість повторів", show_alert=True)
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.settings.UserService")
+    async def test_process_repeat_action_success(
+        self, mock_service_cls: MagicMock, mock_callback: AsyncMock, mock_db_session: AsyncMock
+    ) -> None:
+        mock_service = AsyncMock()
+        mock_service_cls.return_value = mock_service
+
+        callback_data = RepeatCountCallback(count=10)
+        await process_repeat_action(mock_callback, callback_data, db_session=mock_db_session)
+
+        mock_service.set_repeat_count.assert_called_once_with(12345, 10)
+        mock_callback.message.edit_reply_markup.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.settings._list_custom_sound_names", return_value=["Страждання1"])
+    async def test_show_sound_picker_lists_default_and_custom(
+        self, mock_list: MagicMock, mock_callback: AsyncMock
+    ) -> None:
+        await show_sound_picker(mock_callback)
+
+        mock_callback.message.edit_text.assert_called_once()
+        _, kwargs = mock_callback.message.edit_text.call_args
+        callback_datas = [btn.callback_data for row in kwargs["reply_markup"].inline_keyboard for btn in row]
+        assert "sound_pick:siren" in callback_datas
+        assert "sound_pick:Страждання1" in callback_datas
+
+    @pytest.mark.asyncio
+    async def test_send_selected_sound_delivers_default(self, mock_callback: AsyncMock) -> None:
+        callback_data = SoundSelectCallback(name="siren")
+        await send_selected_sound(mock_callback, callback_data)
+
+        mock_callback.message.answer_audio.assert_called_once()
+        mock_callback.answer.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.settings._list_custom_sound_names", return_value=[])
+    async def test_send_selected_sound_rejects_unknown_custom_name(
+        self, mock_list: MagicMock, mock_callback: AsyncMock
+    ) -> None:
+        callback_data = SoundSelectCallback(name="not_real")
+        await send_selected_sound(mock_callback, callback_data)
+
+        mock_callback.answer.assert_called_once_with("Цей звук більше не доступний", show_alert=True)
+        mock_callback.message.answer_audio.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_custom_user_keyword_empty_phrase(

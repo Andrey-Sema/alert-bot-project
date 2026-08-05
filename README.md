@@ -156,7 +156,7 @@ CREATE TABLE user_triggers (
 
 ### 🛰️ Scraper (`alert_bot_project/scraper/`)
 
-Реалізований на [Pyrogram](https://docs.pyrogram.org/) — неофіційному userbot-клієнті Telegram. Підписується на вказаний канал через `filters.chat(GROUP_ID)` і відправляє кожен новий пост у Redis Stream.
+Реалізований на [Pyrogram](https://docs.pyrogram.org/) — неофіційному userbot-клієнті Telegram. Підписується на один або кілька вказаних каналів через `filters.chat(GROUP_IDS)` і відправляє кожен новий пост у Redis Stream.
 
 - Підтримка `PYROGRAM_SESSION_STRING` для stateless деплою в PaaS/K8s
 - Exponential backoff при збоях публікації (3 спроби, 2^n секунд)
@@ -305,12 +305,15 @@ open http://localhost:3000  # admin / $GRAFANA_PASSWORD
 Усі налаштування зберігаються в `.env` файлі та валідуються через [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) при старті.
 
 ```dotenv
+# ─── Ядро застосунку ─────────────────────────────────────────────────────────
+APP_SECRET_KEY=<openssl rand -hex 32>                 # Секрет для HMAC (хешування peer ID в логах)
+
 # ─── Telegram ────────────────────────────────────────────────────────────────
 BOT_TOKEN=1234567890:ABCdefGhIJKlmNoPQRsTUVwXyZ     # Токен від @BotFather
 ADMIN_CHAT_ID=987654321                              # Ваш Telegram ID для Alertmanager
 API_ID=1234567                                       # API ID з my.telegram.org
 API_HASH=abcdef0123456789abcdef0123456789           # API Hash з my.telegram.org
-GROUP_ID=-1001234567890                              # ID цільового Telegram-каналу
+GROUP_IDS=-1001234567890,-1009876543210              # ID цільових Telegram-каналів (через кому)
 
 # Опціонально: рядок сесії Pyrogram для stateless деплою (PaaS/K8s)
 PYROGRAM_SESSION_STRING=
@@ -378,15 +381,34 @@ GRAFANA_PASSWORD=super_secure_admin_password_2026
 
 ### Алгоритм сповіщення
 
-Кожна виявлена загроза генерує **3 хвилі сповіщень**:
+Кожна виявлена загроза генерує каскад сповіщень: перше — одразу, кожне наступне — ще через
+`REPEAT_INTERVAL_SECONDS` (10с). Загальну кількість сповіщень користувач обирає сам у меню
+"🔁 Кількість повторів сигналу" (3 / 5 / 10 / 20 — `alert_bot_project/core_shared/constants.py`).
 
 ```
 t+0с  → 🚨 ALERT_FIRST  "Увага! Загроза у вашому напрямку!"  [+ кнопка підтвердження]
-t+5с  → 🔔 ALERT_SECOND "[2/3] Загроза все ще актуальна!"
-t+65с → 🔔 ALERT_THIRD  "[3/3] Будь ласка, підтвердіть отримання"
+t+10с → 🔔 ALERT_SECOND "Загроза все ще актуальна!"
+t+20с → 🔔 ALERT_THIRD  "Не залишайте безпечних місць!"
+...    → повторюється до обраної кількості повторів
 ```
 
 Якщо користувач натиснув **"✅ Сповіщення прийнято"** — система глушиться на 10 хвилин автоматично.
+
+### 🔊 Кастомні звуки сповіщень
+
+У тому ж меню є пункт "Оберіть звук сповіщення" — бот пропонує вбудовану синтезовану сирену
+(`alert_bot_project/bot/sounds/alert_siren.mp3`, згенерована локально, без завантаження з
+інтернету) і будь-які додаткові `.mp3`, покладені в `./data/custom_sounds/` на хості.
+
+Ця тека **навмисно не входить у git/Docker-образ** — вона підключена як bind-mount
+(`docker-compose.yml`, сервіс `bot_ui`), тому кожен деплой підтягує звуки локально:
+
+```bash
+scp мій_звук.mp3 user@server:~/alert-bot-project/data/custom_sounds/
+# перезапуск не обов'язковий — тека сканується при кожному відкритті меню
+```
+
+Назва файлу без розширення стає підписом кнопки в меню (наприклад, `Страждання1.mp3` → "🔊 Страждання1").
 
 ---
 
@@ -425,6 +447,12 @@ t+65с → 🔔 ALERT_THIRD  "[3/3] Будь ласка, підтвердіть 
 # Попередження:
 - DeadLetterQueueGrows → > 10 повідомлень у DLQ > 2 хв
 ```
+
+> **Технічна деталь:** сам бінарник Alertmanager не вміє підставляти `${BOT_TOKEN}`/`${ADMIN_CHAT_ID}`
+> у свій конфіг (це не `docker-compose`-підстановка, а окрема фіча, якої в Alertmanager немає).
+> Тому `prometheus/alertmanager.yml.template` рендериться в реальний `alertmanager.yml` через
+> `envsubst` в одноразовому сервісі `alertmanager-config` перед стартом самого Alertmanager
+> (див. `docker-compose.yml`).
 
 ---
 
@@ -579,7 +607,7 @@ alert-bot-project/
 ├── prometheus/
 │   ├── prometheus.yml              # Scrape конфіг
 │   ├── alerts.yml                  # Правила алертів
-│   └── alertmanager.yml            # Маршрутизація → Telegram
+│   └── alertmanager.yml.template   # Маршрутизація → Telegram (рендериться через envsubst при старті)
 │
 ├── .github/workflows/ci.yaml       # GitHub Actions CI pipeline
 ├── .pre-commit-config.yaml         # Pre-commit хуки

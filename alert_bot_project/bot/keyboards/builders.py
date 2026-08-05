@@ -6,9 +6,17 @@ from alert_bot_project.core_shared.callbacks import (
     GroupNavCallback,
     LocationToggleCallback,
     MutePresetCallback,
+    RepeatCountCallback,
+    SoundSelectCallback,
     ThreatCategoryCallback,
 )
-from alert_bot_project.core_shared.constants import DISLOCS_PER_PAGE, KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
+from alert_bot_project.core_shared.constants import (
+    DISLOCS_PER_PAGE,
+    KR_POTVORY,
+    ODESA_LOCS,
+    OUTSIDE_LOCS,
+    REPEAT_COUNT_OPTIONS,
+)
 
 # Централизованные константы путей навигации (избавляемся от магических строк)
 MENU_MAIN = "menu:main"
@@ -16,9 +24,12 @@ MENU_CHOOSE_GROUP = "menu:choose_group"
 MENU_CUSTOM_MANAGE = "menu:custom_manage"
 MENU_POTVORY = "menu:potvory"
 MENU_MUTE = "menu:mute"
+MENU_REPEATS = "menu:repeats"
+MENU_SOUNDS = "menu:sounds"
 MENU_INFO = "menu:info"
 CUSTOM_ADD = "custom:add"
 ALERT_ACK = "alert:ack"
+DEFAULT_SOUND_NAME = "siren"
 
 # ✅ ФИКС С СОНАРОМ (python:S1192): Избавляемся от дублирования строковых литералов
 BACK_BUTTON_TEXT = "⬅️ Назад"
@@ -37,6 +48,7 @@ def build_main_menu() -> InlineKeyboardMarkup:
     kb.button(text="✍️ Мої кастомні фрази", callback_data=MENU_CUSTOM_MANAGE)
     kb.button(text="🦅 Крилаті потвори", callback_data=MENU_POTVORY)
     kb.button(text="🔕 Режим тиші (MUTE)", callback_data=MENU_MUTE)
+    kb.button(text="🔁 Кількість повторів сигналу", callback_data=MENU_REPEATS)
     kb.button(text="ℹ️ Інформація", callback_data=MENU_INFO)
     kb.adjust(1)
     return kb.as_markup()
@@ -118,6 +130,27 @@ def build_mute_options_keyboard() -> InlineKeyboardMarkup:
     kb.button(text="🔔 Увімкнути звук", callback_data=MutePresetCallback(preset="clear").pack())
     kb.button(text=BACK_BUTTON_TEXT, callback_data=MENU_MAIN)
     kb.adjust(2)
+    return kb.as_markup()
+
+
+def build_repeat_options_keyboard(current_count: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for option in REPEAT_COUNT_OPTIONS:
+        status_marker = "✅" if option == current_count else "🔁"
+        kb.button(text=f"{status_marker} {option} повторів", callback_data=RepeatCountCallback(count=option).pack())
+    kb.button(text="🔊 Оберіть звук сповіщення", callback_data=MENU_SOUNDS)
+    kb.button(text=BACK_BUTTON_TEXT, callback_data=MENU_MAIN)
+    kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def build_sound_picker_keyboard(custom_names: list[str]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🚨 Стандартна сирена", callback_data=SoundSelectCallback(name=DEFAULT_SOUND_NAME).pack())
+    for name in custom_names:
+        kb.button(text=f"🔊 {name}", callback_data=SoundSelectCallback(name=name).pack())
+    kb.button(text=BACK_BUTTON_TEXT, callback_data=MENU_REPEATS)
+    kb.adjust(1)
     return kb.as_markup()
 
 

@@ -56,8 +56,9 @@ jobs:
     - name: Run Complete Pytest Suite Engine (Units & Integration)
       env:
         # Подсовываем фейковые переменные для прохождения тестов конфигурации Pydantic
+        APP_SECRET_KEY: "fake_ci_app_secret_key"
         BOT_TOKEN: "123456:fake_token"
-        GROUP_ID: "-100123456"
+        GROUP_IDS: "-100123456"
         API_ID: "123456"
         API_HASH: "fake_hash"
         DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"

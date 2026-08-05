@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, func, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -40,6 +40,9 @@ class UserSettings(Base):
     # ✅ ФИКС 2: Добавлен B-Tree индекс (index=True). Теперь реалтайм-выборка get_users_by_trigger_and_category
     # при проверке режима тишины будет выполняться мгновенно через Index Scan, минуя перебор всей таблицы строк.
     muted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    # Кількість повторів сигналу тривоги (3/5/10/20), обраних користувачем у меню налаштувань
+    repeat_count: Mapped[int] = mapped_column(Integer, default=3, server_default=text("3"), nullable=False)
 
     # ✅ ОПТИМИЗАЦИЯ: Перевели дефолт времени на server_default=func.now(),
     # чтобы время создания профиля генерировалось на уровне движка БД, а не на стороне Python.

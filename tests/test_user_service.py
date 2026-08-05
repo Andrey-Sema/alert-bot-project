@@ -193,6 +193,25 @@ class TestApplyMutePreset:
             assert called_utc_target.hour == 4
 
 
+class TestSetRepeatCount:
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_repeat_count(self, user_service: UserService) -> None:
+        with pytest.raises(ValueError, match="Unknown repeat count"):
+            await user_service.set_repeat_count(12345, 999)
+        user_service.redis.set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_persists_valid_repeat_count(self, user_service: UserService) -> None:
+        with patch("alert_bot_project.services.user_service.update_user_repeat_count") as mock_update:
+            mock_update: MagicMock
+
+            msg = await user_service.set_repeat_count(12345, 10)
+
+            assert "10" in msg
+            mock_update.assert_called_once_with(user_service.session, 12345, 10)
+            user_service.redis.set.assert_called_once_with("user_repeat_count:12345", "10")
+
+
 class TestAcknowledgeAlert:
     @pytest.mark.asyncio
     async def test_acknowledge_mutes_for_10_minutes(self, user_service: UserService) -> None:

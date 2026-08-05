@@ -21,6 +21,7 @@ def mock_redis() -> MagicMock:
     r.register_script = MagicMock()  # Синхронный по контракту библиотеки
     r.exists = AsyncMock()  # Асинхронные
     r.zadd = AsyncMock()
+    r.get = AsyncMock(return_value=None)  # Без явно заданого repeat_count -> дефолт (3)
     return r
 
 
@@ -41,6 +42,38 @@ class TestBroadcasterDelayedLogic:
             steps = [json.loads(k)["step"] for k in mapping]
             assert 2 in steps
             assert 3 in steps
+            assert 4 not in steps
+
+            base_time = 1700000000
+            scores_by_step = {json.loads(k)["step"]: score for k, score in mapping.items()}
+            assert scores_by_step[2] == base_time + 10
+            assert scores_by_step[3] == base_time + 20
+
+    @pytest.mark.asyncio
+    async def test_execute_scheduling_honors_custom_repeat_count(
+        self, mock_bot: AsyncMock, mock_redis: MagicMock
+    ) -> None:
+        mock_redis.get = AsyncMock(return_value="5")
+        broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis)
+
+        with patch("time.time", return_value=1700000000):
+            await broadcaster._execute_scheduling(chat_id=555, disable_notification=False)
+
+            mock_redis.zadd.assert_called_once()
+            called_args = mock_redis.zadd.call_args[1]
+            mapping = called_args[0] if len(called_args) == 1 else mock_redis.zadd.call_args[0][1]
+
+            steps = sorted(json.loads(k)["step"] for k in mapping)
+            assert steps == [2, 3, 4, 5]
+
+            base_time = 1700000000
+            scores_by_step = {json.loads(k)["step"]: score for k, score in mapping.items()}
+            assert scores_by_step == {
+                2: base_time + 10,
+                3: base_time + 20,
+                4: base_time + 30,
+                5: base_time + 40,
+            }
 
     @pytest.mark.asyncio
     async def test_process_single_delayed_task_corrupted_json(self, mock_bot: AsyncMock, mock_redis: MagicMock) -> None:

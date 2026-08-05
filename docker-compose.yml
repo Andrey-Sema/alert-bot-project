@@ -76,7 +76,7 @@ services:
     container_name: odesa_alert_scraper
     command: python -m alert_bot_project.scraper.main
     volumes:
-      - ./data/session:/data/session
+      - ./data/session:/data/session:z
       - shared_logs:/data/logs
     deploy:
       resources:
@@ -125,6 +125,9 @@ services:
     command: python -m alert_bot_project.bot.main
     volumes:
       - shared_logs:/data/logs
+      # Кладіть сюди свої власні mp3 (не входять в git/образ) — бот підхопить їх
+      # автоматично в меню "🔊 Оберіть звук сповіщення". Див. README.md → "Кастомні звуки сповіщень"
+      - ./data/custom_sounds:/data/custom_sounds:ro,z
     deploy:
       resources:
         limits:
@@ -151,8 +154,8 @@ services:
     container_name: odesa_alert_prometheus
     restart: unless-stopped
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro,z
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -171,19 +174,39 @@ services:
     networks:
       - alert_network
 
+  # ✅ ФИКС: Сам бінарник Alertmanager НЕ вміє підставляти ${ENV_VAR} у свій YAML-конфіг —
+  # це не docker-compose підстановка, а буквальний текст, який Alertmanager намагається
+  # розпарсити як є (chat_id: ${ADMIN_CHAT_ID} падає з "cannot unmarshal !!str into int64").
+  # Тому конфіг рендеримо заздалегідь через envsubst в окремому одноразовому контейнері.
+  alertmanager-config:
+    image: alpine:3.20
+    container_name: odesa_alert_alertmanager_config
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
+    volumes:
+      - ./prometheus/alertmanager.yml.template:/template/alertmanager.yml.template:ro,z
+      - alertmanager_config:/rendered
+    command: >
+      sh -c "apk add --no-cache gettext > /dev/null &&
+             envsubst '$${BOT_TOKEN} $${ADMIN_CHAT_ID}' < /template/alertmanager.yml.template > /rendered/alertmanager.yml"
+    restart: "no"
+    networks:
+      - alert_network
+
   alertmanager:
     image: prom/alertmanager:latest
     container_name: odesa_alert_alertmanager
     restart: unless-stopped
+    depends_on:
+      alertmanager-config:
+        condition: service_completed_successfully
     volumes:
-      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_config:/etc/alertmanager:ro
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
     ports:
       - "127.0.0.1:9093:9093"
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
     networks:
       - alert_network
 
@@ -194,8 +217,8 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is strictly required in .env}
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro,z
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro,z
     ports:
       - "127.0.0.1:3000:3000"
     # Графана стартует только тогда, когда Прометей полностью готов отдавать данные
@@ -209,6 +232,8 @@ volumes:
   redis_data:
     driver: local
   shared_logs:
+    driver: local
+  alertmanager_config:
     driver: local
 
 networks:

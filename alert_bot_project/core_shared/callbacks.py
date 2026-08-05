@@ -60,6 +60,29 @@ class MutePresetCallback(CallbackData, prefix="mute_set"):
     preset: str
 
 
+class RepeatCountCallback(CallbackData, prefix="repeat_set"):
+    """
+    Фабрика колбэків для вибору кількості повторів сигналу тривоги.
+
+    Attributes:
+        count (int): Кількість повторів сповіщення (3, 5, 10 або 20).
+    """
+
+    count: int
+
+
+class SoundSelectCallback(CallbackData, prefix="sound_pick"):
+    """
+    Фабрика колбэків для вибору звукового сигналу сповіщення.
+
+    Attributes:
+        name (str): Ім'я звуку без розширення ("siren" — вбудований дефолт,
+            або stem файлу з теки кастомних звуків).
+    """
+
+    name: str
+
+
 class CustomActionCallback(CallbackData, prefix="custom_act"):
     """
     Фабрика колбэків для індивідуальних дій з кастомними фразами користувача (наприклад, видалення).

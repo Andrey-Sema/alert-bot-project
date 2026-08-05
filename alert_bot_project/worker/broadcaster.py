@@ -15,11 +15,11 @@ from redis.asyncio import Redis
 
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.constants import (
-    ALERT_DELAY_1,
-    ALERT_DELAY_2,
     ALERT_SECOND,
     ALERT_THIRD,
+    DEFAULT_REPEAT_COUNT,
     KYIV_TZ,
+    REPEAT_INTERVAL_SECONDS,
 )
 
 logger = logging.getLogger("worker.broadcaster")
@@ -45,7 +45,7 @@ class Broadcaster:
         self.delayed_queue_key = "delayed_alerts_queue"
         self.queue: asyncio.Queue[tuple[int, str, InlineKeyboardMarkup | None, bool]] = asyncio.Queue(maxsize=10000)
         self._workers: list[Task[None]] = []
-        self._salt = config.API_HASH.encode()
+        self._salt = config.APP_SECRET_KEY.encode()
         self._background_tasks: set[Task[None]] = set()
 
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
@@ -136,19 +136,30 @@ class Broadcaster:
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
 
+    async def _get_user_repeat_count(self, chat_id: int) -> int:
+        raw = await self.redis.get(f"user_repeat_count:{chat_id}")
+        if not raw:
+            return DEFAULT_REPEAT_COUNT
+        try:
+            return int(raw)
+        except ValueError:
+            return DEFAULT_REPEAT_COUNT
+
     async def _execute_scheduling(self, chat_id: int, disable_notification: bool) -> None:
         try:
+            repeat_count = await self._get_user_repeat_count(chat_id)
             now_unix = int(time.time())
-            task_step_2 = {"chat_id": chat_id, "step": 2, "text": ALERT_SECOND, "silent": disable_notification}
-            task_step_3 = {"chat_id": chat_id, "step": 3, "text": ALERT_THIRD, "silent": disable_notification}
+            zadd_mapping: dict[str, int] = {}
 
-            await self.redis.zadd(
-                self.delayed_queue_key,
-                {
-                    json.dumps(task_step_2): now_unix + ALERT_DELAY_1,
-                    json.dumps(task_step_3): now_unix + ALERT_DELAY_1 + ALERT_DELAY_2,
-                },
-            )
+            # Кожен наступний крок — ще на REPEAT_INTERVAL_SECONDS пізніше за перше сповіщення
+            for step in range(2, repeat_count + 1):
+                delay = (step - 1) * REPEAT_INTERVAL_SECONDS
+                text = ALERT_SECOND if step == 2 else ALERT_THIRD
+                task = {"chat_id": chat_id, "step": step, "text": text, "silent": disable_notification}
+                zadd_mapping[json.dumps(task)] = now_unix + delay
+
+            if zadd_mapping:
+                await self.redis.zadd(self.delayed_queue_key, zadd_mapping)
         except Exception:
             logger.exception("Сбой записи в отложенную очередь для peer %s", self._hash_id(chat_id))
 
