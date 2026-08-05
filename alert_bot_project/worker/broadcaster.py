@@ -46,7 +46,7 @@ class Broadcaster:
         self.delayed_queue_key = "delayed_alerts_queue"
         self.queue: asyncio.Queue[tuple[int, str, InlineKeyboardMarkup | None, bool]] = asyncio.Queue(maxsize=10000)
         self._workers: list[Task[None]] = []
-        self._salt = config.API_HASH.encode()
+        self._salt = config.APP_SECRET_KEY.encode()
         self._background_tasks: set[Task[None]] = set()
 
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()

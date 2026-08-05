@@ -305,6 +305,9 @@ open http://localhost:3000  # admin / $GRAFANA_PASSWORD
 Усі налаштування зберігаються в `.env` файлі та валідуються через [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) при старті.
 
 ```dotenv
+# ─── Ядро застосунку ─────────────────────────────────────────────────────────
+APP_SECRET_KEY=<openssl rand -hex 32>                 # Секрет для HMAC (хешування peer ID в логах)
+
 # ─── Telegram ────────────────────────────────────────────────────────────────
 BOT_TOKEN=1234567890:ABCdefGhIJKlmNoPQRsTUVwXyZ     # Токен від @BotFather
 ADMIN_CHAT_ID=987654321                              # Ваш Telegram ID для Alertmanager

@@ -56,6 +56,7 @@ jobs:
     - name: Run Complete Pytest Suite Engine (Units & Integration)
       env:
         # Подсовываем фейковые переменные для прохождения тестов конфигурации Pydantic
+        APP_SECRET_KEY: "fake_ci_app_secret_key"
         BOT_TOKEN: "123456:fake_token"
         GROUP_IDS: "-100123456"
         API_ID: "123456"

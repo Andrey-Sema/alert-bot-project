@@ -6,7 +6,13 @@ from redis.asyncio import Redis
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alert_bot_project.core_shared.constants import KYIV_TZ, MAX_CUSTOM_TRIGGERS, ODESA_LOCS, OUTSIDE_LOCS
+from alert_bot_project.core_shared.constants import (
+    KYIV_TZ,
+    MAX_CUSTOM_TRIGGERS,
+    ODESA_LOCS,
+    OUTSIDE_LOCS,
+    REPEAT_COUNT_OPTIONS,
+)
 from alert_bot_project.database.crud import (
     add_user_trigger,
     get_or_create_user,
@@ -100,6 +106,9 @@ class UserService:
 
     async def set_repeat_count(self, user_id: int, repeat_count: int) -> str:
         """Зберігає обрану кількість повторів сигналу тривоги в БД і синхронізує кэш Redis."""
+        if repeat_count not in REPEAT_COUNT_OPTIONS:
+            raise ValueError(f"Unknown repeat count: {repeat_count}")
+
         await update_user_repeat_count(self.session, user_id, repeat_count)
         await self.redis.set(f"user_repeat_count:{user_id}", str(repeat_count))
         return f"Кількість повторів встановлено: {repeat_count}"

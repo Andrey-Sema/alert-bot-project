@@ -5,6 +5,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # Application core secret, used for HMAC/salting (e.g. hashing peer IDs before logging)
+    APP_SECRET_KEY: str = Field(..., description="Unique application secret for cryptographic tasks (HMAC, salts)")
+
     # Telegram Bot Settings
     BOT_TOKEN: str = Field(..., description="Official UI bot token obtained from BotFather")
     GROUP_IDS: Annotated[list[int], NoDecode] = Field(
