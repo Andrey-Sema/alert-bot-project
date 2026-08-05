@@ -174,19 +174,39 @@ services:
     networks:
       - alert_network
 
+  # ✅ ФИКС: Сам бінарник Alertmanager НЕ вміє підставляти ${ENV_VAR} у свій YAML-конфіг —
+  # це не docker-compose підстановка, а буквальний текст, який Alertmanager намагається
+  # розпарсити як є (chat_id: ${ADMIN_CHAT_ID} падає з "cannot unmarshal !!str into int64").
+  # Тому конфіг рендеримо заздалегідь через envsubst в окремому одноразовому контейнері.
+  alertmanager-config:
+    image: alpine:3.20
+    container_name: odesa_alert_alertmanager_config
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
+    volumes:
+      - ./prometheus/alertmanager.yml.template:/template/alertmanager.yml.template:ro,z
+      - alertmanager_config:/rendered
+    command: >
+      sh -c "apk add --no-cache gettext > /dev/null &&
+             envsubst '$${BOT_TOKEN} $${ADMIN_CHAT_ID}' < /template/alertmanager.yml.template > /rendered/alertmanager.yml"
+    restart: "no"
+    networks:
+      - alert_network
+
   alertmanager:
     image: prom/alertmanager:latest
     container_name: odesa_alert_alertmanager
     restart: unless-stopped
+    depends_on:
+      alertmanager-config:
+        condition: service_completed_successfully
     volumes:
-      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro,z
+      - alertmanager_config:/etc/alertmanager:ro
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
     ports:
       - "127.0.0.1:9093:9093"
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
     networks:
       - alert_network
 
@@ -212,6 +232,8 @@ volumes:
   redis_data:
     driver: local
   shared_logs:
+    driver: local
+  alertmanager_config:
     driver: local
 
 networks:

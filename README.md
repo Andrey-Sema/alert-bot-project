@@ -448,6 +448,12 @@ scp мій_звук.mp3 user@server:~/alert-bot-project/data/custom_sounds/
 - DeadLetterQueueGrows → > 10 повідомлень у DLQ > 2 хв
 ```
 
+> **Технічна деталь:** сам бінарник Alertmanager не вміє підставляти `${BOT_TOKEN}`/`${ADMIN_CHAT_ID}`
+> у свій конфіг (це не `docker-compose`-підстановка, а окрема фіча, якої в Alertmanager немає).
+> Тому `prometheus/alertmanager.yml.template` рендериться в реальний `alertmanager.yml` через
+> `envsubst` в одноразовому сервісі `alertmanager-config` перед стартом самого Alertmanager
+> (див. `docker-compose.yml`).
+
 ---
 
 ## 🧪 Тестування
@@ -601,7 +607,7 @@ alert-bot-project/
 ├── prometheus/
 │   ├── prometheus.yml              # Scrape конфіг
 │   ├── alerts.yml                  # Правила алертів
-│   └── alertmanager.yml            # Маршрутизація → Telegram
+│   └── alertmanager.yml.template   # Маршрутизація → Telegram (рендериться через envsubst при старті)
 │
 ├── .github/workflows/ci.yaml       # GitHub Actions CI pipeline
 ├── .pre-commit-config.yaml         # Pre-commit хуки
