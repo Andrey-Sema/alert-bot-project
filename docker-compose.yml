@@ -76,7 +76,7 @@ services:
     container_name: odesa_alert_scraper
     command: python -m alert_bot_project.scraper.main
     volumes:
-      - ./data/session:/data/session
+      - ./data/session:/data/session:z
       - shared_logs:/data/logs
     deploy:
       resources:
@@ -151,8 +151,8 @@ services:
     container_name: odesa_alert_prometheus
     restart: unless-stopped
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro,z
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -176,7 +176,7 @@ services:
     container_name: odesa_alert_alertmanager
     restart: unless-stopped
     volumes:
-      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro,z
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
     ports:
@@ -194,8 +194,8 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is strictly required in .env}
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro,z
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro,z
     ports:
       - "127.0.0.1:3000:3000"
     # Графана стартует только тогда, когда Прометей полностью готов отдавать данные
