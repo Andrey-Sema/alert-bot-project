@@ -7,6 +7,7 @@ from alert_bot_project.core_shared.callbacks import (
     LocationToggleCallback,
     MutePresetCallback,
     RepeatCountCallback,
+    SoundSelectCallback,
     ThreatCategoryCallback,
 )
 from alert_bot_project.core_shared.constants import (
@@ -24,10 +25,11 @@ MENU_CUSTOM_MANAGE = "menu:custom_manage"
 MENU_POTVORY = "menu:potvory"
 MENU_MUTE = "menu:mute"
 MENU_REPEATS = "menu:repeats"
+MENU_SOUNDS = "menu:sounds"
 MENU_INFO = "menu:info"
 CUSTOM_ADD = "custom:add"
 ALERT_ACK = "alert:ack"
-SOUND_SEND = "sound:send"
+DEFAULT_SOUND_NAME = "siren"
 
 # ✅ ФИКС С СОНАРОМ (python:S1192): Избавляемся от дублирования строковых литералов
 BACK_BUTTON_TEXT = "⬅️ Назад"
@@ -136,9 +138,19 @@ def build_repeat_options_keyboard(current_count: int) -> InlineKeyboardMarkup:
     for option in REPEAT_COUNT_OPTIONS:
         status_marker = "✅" if option == current_count else "🔁"
         kb.button(text=f"{status_marker} {option} повторів", callback_data=RepeatCountCallback(count=option).pack())
-    kb.button(text="🔊 Надіслати приклад сигналу", callback_data=SOUND_SEND)
+    kb.button(text="🔊 Оберіть звук сповіщення", callback_data=MENU_SOUNDS)
     kb.button(text=BACK_BUTTON_TEXT, callback_data=MENU_MAIN)
     kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def build_sound_picker_keyboard(custom_names: list[str]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🚨 Стандартна сирена", callback_data=SoundSelectCallback(name=DEFAULT_SOUND_NAME).pack())
+    for name in custom_names:
+        kb.button(text=f"🔊 {name}", callback_data=SoundSelectCallback(name=name).pack())
+    kb.button(text=BACK_BUTTON_TEXT, callback_data=MENU_REPEATS)
+    kb.adjust(1)
     return kb.as_markup()
 
 

@@ -71,6 +71,18 @@ class RepeatCountCallback(CallbackData, prefix="repeat_set"):
     count: int
 
 
+class SoundSelectCallback(CallbackData, prefix="sound_pick"):
+    """
+    Фабрика колбэків для вибору звукового сигналу сповіщення.
+
+    Attributes:
+        name (str): Ім'я звуку без розширення ("siren" — вбудований дефолт,
+            або stem файлу з теки кастомних звуків).
+    """
+
+    name: str
+
+
 class CustomActionCallback(CallbackData, prefix="custom_act"):
     """
     Фабрика колбэків для індивідуальних дій з кастомними фразами користувача (наприклад, видалення).

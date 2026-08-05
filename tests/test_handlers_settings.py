@@ -8,8 +8,9 @@ from alert_bot_project.bot.handlers.settings import (
     delete_custom_user_keyword,
     process_mute_action,
     process_repeat_action,
-    send_alert_sound_sample,
+    send_selected_sound,
     show_repeat_options,
+    show_sound_picker,
     toggle_location_trigger,
     toggle_threat_category,
 )
@@ -18,6 +19,7 @@ from alert_bot_project.core_shared.callbacks import (
     LocationToggleCallback,
     MutePresetCallback,
     RepeatCountCallback,
+    SoundSelectCallback,
     ThreatCategoryCallback,
 )
 from alert_bot_project.database.models import UserSettings
@@ -133,11 +135,36 @@ class TestSettingsHandlersExtended:
         mock_callback.message.edit_reply_markup.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_send_alert_sound_sample_delivers_audio(self, mock_callback: AsyncMock) -> None:
-        await send_alert_sound_sample(mock_callback)
+    @patch("alert_bot_project.bot.handlers.settings._list_custom_sound_names", return_value=["Страждання1"])
+    async def test_show_sound_picker_lists_default_and_custom(
+        self, mock_list: MagicMock, mock_callback: AsyncMock
+    ) -> None:
+        await show_sound_picker(mock_callback)
+
+        mock_callback.message.edit_text.assert_called_once()
+        _, kwargs = mock_callback.message.edit_text.call_args
+        callback_datas = [btn.callback_data for row in kwargs["reply_markup"].inline_keyboard for btn in row]
+        assert "sound_pick:siren" in callback_datas
+        assert "sound_pick:Страждання1" in callback_datas
+
+    @pytest.mark.asyncio
+    async def test_send_selected_sound_delivers_default(self, mock_callback: AsyncMock) -> None:
+        callback_data = SoundSelectCallback(name="siren")
+        await send_selected_sound(mock_callback, callback_data)
 
         mock_callback.message.answer_audio.assert_called_once()
         mock_callback.answer.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.settings._list_custom_sound_names", return_value=[])
+    async def test_send_selected_sound_rejects_unknown_custom_name(
+        self, mock_list: MagicMock, mock_callback: AsyncMock
+    ) -> None:
+        callback_data = SoundSelectCallback(name="not_real")
+        await send_selected_sound(mock_callback, callback_data)
+
+        mock_callback.answer.assert_called_once_with("Цей звук більше не доступний", show_alert=True)
+        mock_callback.message.answer_audio.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_custom_user_keyword_empty_phrase(

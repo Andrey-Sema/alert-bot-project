@@ -125,6 +125,9 @@ services:
     command: python -m alert_bot_project.bot.main
     volumes:
       - shared_logs:/data/logs
+      # Кладіть сюди свої власні mp3 (не входять в git/образ) — бот підхопить їх
+      # автоматично в меню "🔊 Оберіть звук сповіщення". Див. README.md → "Кастомні звуки сповіщень"
+      - ./data/custom_sounds:/data/custom_sounds:ro,z
     deploy:
       resources:
         limits:

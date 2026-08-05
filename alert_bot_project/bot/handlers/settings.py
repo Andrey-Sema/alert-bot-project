@@ -11,20 +11,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from alert_bot_project.bot.keyboards.builders import (
     ALERT_ACK,
     CUSTOM_ADD,
+    DEFAULT_SOUND_NAME,
     MENU_CHOOSE_GROUP,
     MENU_CUSTOM_MANAGE,
     MENU_MUTE,
     MENU_POTVORY,
     MENU_REPEATS,
-    SOUND_SEND,
+    MENU_SOUNDS,
     build_custom_triggers_management_keyboard,
     build_group_selection_menu,
     build_locations_paginated_keyboard,
     build_mute_options_keyboard,
     build_repeat_options_keyboard,
+    build_sound_picker_keyboard,
     build_threat_categories_keyboard,
 )
-from alert_bot_project.bot.keyboards.messages import REPEATS_INFO_TEXT, SOUND_SEND_CAPTION
+from alert_bot_project.bot.keyboards.messages import REPEATS_INFO_TEXT, SOUND_PICKER_TEXT, SOUND_SEND_CAPTION
 from alert_bot_project.bot.loader import redis_client
 from alert_bot_project.core_shared.callbacks import (
     CustomActionCallback,
@@ -33,6 +35,7 @@ from alert_bot_project.core_shared.callbacks import (
     LocationToggleCallback,
     MutePresetCallback,
     RepeatCountCallback,
+    SoundSelectCallback,
     ThreatCategoryCallback,
 )
 from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS, REPEAT_COUNT_OPTIONS
@@ -43,7 +46,15 @@ from alert_bot_project.services.user_service import UserService
 logger = logging.getLogger("bot.handlers.settings")
 router = Router(name="settings_router")
 
-SOUND_ASSET_PATH = Path(__file__).resolve().parent.parent / "sounds" / "alert_siren.mp3"
+DEFAULT_SOUND_PATH = Path(__file__).resolve().parent.parent / "sounds" / "alert_siren.mp3"
+CUSTOM_SOUNDS_DIR = Path("/data/custom_sounds")
+
+
+def _list_custom_sound_names() -> list[str]:
+    """Скан теки з кастомними звуками (bind-mount, поза git/образом) на льоту."""
+    if not CUSTOM_SOUNDS_DIR.is_dir():
+        return []
+    return sorted(p.stem for p in CUSTOM_SOUNDS_DIR.glob("*.mp3"))
 
 
 @router.callback_query(F.data == MENU_CHOOSE_GROUP)
@@ -182,15 +193,33 @@ async def process_repeat_action(
     await callback.answer(text=f"Кількість повторів встановлено: {callback_data.count}")
 
 
-@router.callback_query(F.data == SOUND_SEND)
-async def send_alert_sound_sample(callback: CallbackQuery) -> None:
-    if not SOUND_ASSET_PATH.exists():
+@router.callback_query(F.data == MENU_SOUNDS)
+async def show_sound_picker(callback: CallbackQuery) -> None:
+    await cast(Message, callback.message).edit_text(
+        text=SOUND_PICKER_TEXT, reply_markup=build_sound_picker_keyboard(_list_custom_sound_names())
+    )
+    await callback.answer()
+
+
+@router.callback_query(SoundSelectCallback.filter())
+async def send_selected_sound(callback: CallbackQuery, callback_data: SoundSelectCallback) -> None:
+    if callback_data.name == DEFAULT_SOUND_NAME:
+        sound_path = DEFAULT_SOUND_PATH
+    else:
+        # Ім'я має точно збігатися з файлом, знайденим у теці ЗАРАЗ — жодного
+        # прямого підставлення callback_data у шлях без звірки зі списком.
+        if callback_data.name not in _list_custom_sound_names():
+            await callback.answer("Цей звук більше не доступний", show_alert=True)
+            return
+        sound_path = CUSTOM_SOUNDS_DIR / f"{callback_data.name}.mp3"
+
+    if not sound_path.exists():
         await callback.answer("Файл звуку тимчасово недоступний", show_alert=True)
         return
 
     await cast(Message, callback.message).answer_audio(
-        audio=FSInputFile(SOUND_ASSET_PATH),
-        title="OdesaAlert Siren",
+        audio=FSInputFile(sound_path),
+        title=callback_data.name,
         caption=SOUND_SEND_CAPTION,
     )
     await callback.answer()
