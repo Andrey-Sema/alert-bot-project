@@ -6,6 +6,8 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 from redis.asyncio import Redis
 
+from alert_bot_project.core_shared.privacy import hash_peer_id
+
 logger = logging.getLogger("bot.middlewares.throttling")
 
 
@@ -33,7 +35,7 @@ class ThrottlingMiddleware(BaseMiddleware):
         key = f"throttle:{user.id}"
         allowed = await self.redis.set(key, "1", nx=True, px=int(self.rate_limit * 1000))
         if not allowed:
-            logger.debug("Throttled update from user_id=%s", user.id)
+            logger.debug("Throttled update from user=%s", hash_peer_id(user.id))
             return None
 
         return await handler(event, data)

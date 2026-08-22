@@ -1,6 +1,4 @@
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -21,6 +19,7 @@ from alert_bot_project.core_shared.constants import (
     ALERT_THIRD,
     KYIV_TZ,
 )
+from alert_bot_project.core_shared.privacy import hash_peer_id
 
 logger = logging.getLogger("worker.broadcaster")
 
@@ -45,15 +44,11 @@ class Broadcaster:
         self.delayed_queue_key = "delayed_alerts_queue"
         self.queue: asyncio.Queue[tuple[int, str, InlineKeyboardMarkup | None, bool]] = asyncio.Queue(maxsize=10000)
         self._workers: list[Task[None]] = []
-        self._salt = config.API_HASH.encode()
         self._background_tasks: set[Task[None]] = set()
 
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
         self._night_end = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
         self._tz = ZoneInfo(KYIV_TZ)
-
-    def _hash_id(self, chat_id: int) -> str:
-        return hmac.new(self._salt, str(chat_id).encode(), hashlib.sha256).hexdigest()[:16]
 
     def start(self) -> None:
         # ✅ ФИКС С СОНАРОМ (python:S7503): Убран избыточный async/await, так как создание тасков синхронно
@@ -90,7 +85,7 @@ class Broadcaster:
     ) -> bool:
         total_time_waited = 0
         max_wait_seconds = config.TELEGRAM_MAX_RETRY_SECONDS
-        peer_hash = self._hash_id(chat_id)
+        peer_hash = hash_peer_id(chat_id)
 
         while total_time_waited < max_wait_seconds:
             try:
@@ -130,7 +125,7 @@ class Broadcaster:
         except asyncio.QueueFull:
             logger.warning(
                 "Внутренняя очередь переполнена. Запуск фоновой принудительной записи для peer %s",
-                self._hash_id(chat_id),
+                hash_peer_id(chat_id),
             )
             task = asyncio.create_task(self.queue.put((chat_id, text, reply_markup, disable_notification)))
             self._background_tasks.add(task)
@@ -150,7 +145,7 @@ class Broadcaster:
                 },
             )
         except Exception:
-            logger.exception("Сбой записи в отложенную очередь для peer %s", self._hash_id(chat_id))
+            logger.exception("Сбой записи в отложенную очередь для peer %s", hash_peer_id(chat_id))
 
     def schedule_delayed_alerts(self, chat_id: int, disable_notification: bool) -> None:
         task = asyncio.create_task(self._execute_scheduling(chat_id, disable_notification))
@@ -168,7 +163,7 @@ class Broadcaster:
         user_id = task_data["chat_id"]
 
         if await self.redis.exists(f"user_mute:{user_id}"):
-            logger.debug("Отложенное уведомление пропущено: peer %s находится в режиме MUTE", self._hash_id(user_id))
+            logger.debug("Отложенное уведомление пропущено: peer %s находится в режиме MUTE", hash_peer_id(user_id))
             return
 
         self.fire_and_forget_message(

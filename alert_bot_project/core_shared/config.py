@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # Infrastructure Settings (Supabase & Redis)
     DATABASE_URL: str = Field(..., description="Connection string for PostgreSQL / Supabase")
     REDIS_URL: str = Field("redis://localhost:6379/0", description="Connection string for Redis instance")
+    DB_POOL_SIZE: int = Field(10, ge=1, description="SQLAlchemy async engine connection pool size")
+    DB_MAX_OVERFLOW: int = Field(20, ge=0, description="SQLAlchemy async engine max overflow connections")
+
+    # Application-wide secret for internal cryptographic tasks (HMAC salts, log pseudonymization).
+    # Optional: when empty, callers that need a salt fall back to a derived value so existing
+    # deployments without this var set keep working unchanged.
+    APP_SECRET_KEY: str = Field("", description="Secret key for internal HMAC/salt usage (not a Telegram credential)")
 
     # ✅ ФИКС: Добавлены строгие диапазоны портов (ge=1024, le=65535) для предотвращения системных сбоев
     METRICS_PORT_WORKER: int = Field(8000, ge=1024, le=65535, description="Prometheus metrics port for worker service")

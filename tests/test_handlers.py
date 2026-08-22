@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from alert_bot_project.bot.handlers.settings import show_group_selection, store_custom_user_keyword
 from alert_bot_project.bot.handlers.start import process_return_to_main_menu, process_start_command
+from alert_bot_project.core_shared.privacy import hash_peer_id
 from alert_bot_project.database.models import UserSettings
 
 
@@ -36,6 +37,23 @@ class TestStartHandlers:
 
         mock_get_user.assert_called_once_with(mock_db_session, 77777)
         mock_message.answer.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("alert_bot_project.bot.handlers.start.get_or_create_user")
+    async def test_process_start_command_logs_hashed_id_not_raw(
+        self, mock_get_user: MagicMock, mock_db_session: AsyncMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """user_id — псевдо-PII, лог має містити той самий хешований пір, що й Broadcaster, а не сирий id."""
+        mock_user_tg = MagicMock()
+        mock_user_tg.id = 77777
+        mock_message = AsyncMock(from_user=mock_user_tg)
+        mock_get_user.return_value = UserSettings(user_id=77777)
+
+        with caplog.at_level("INFO", logger="bot.handlers.start"):
+            await process_start_command(mock_message, db_session=mock_db_session)
+
+        assert "77777" not in caplog.text
+        assert hash_peer_id(77777) in caplog.text
 
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.start.get_or_create_user")

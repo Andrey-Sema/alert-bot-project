@@ -39,7 +39,7 @@ services:
       - alert_network
 
   redis-exporter:
-    image: oliver006/redis_exporter:latest
+    image: oliver006/redis_exporter:v1.89.0
     container_name: odesa_alert_redis_exporter
     restart: unless-stopped
     environment:
@@ -147,7 +147,7 @@ services:
   # =========================================================================
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.14.0
     container_name: odesa_alert_prometheus
     restart: unless-stopped
     volumes:
@@ -157,7 +157,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:${HOST_PORT_PROMETHEUS:-9090}:9090"
     healthcheck:
       test: ["CMD", "wget", "-q", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
       interval: 10s
@@ -172,7 +172,7 @@ services:
       - alert_network
 
   alertmanager:
-    image: prom/alertmanager:latest
+    image: prom/alertmanager:v0.34.0
     container_name: odesa_alert_alertmanager
     restart: unless-stopped
     volumes:
@@ -180,7 +180,7 @@ services:
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
     ports:
-      - "127.0.0.1:9093:9093"
+      - "127.0.0.1:${HOST_PORT_ALERTMANAGER:-9093}:9093"
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
@@ -188,7 +188,7 @@ services:
       - alert_network
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.1.4
     container_name: odesa_alert_grafana
     restart: unless-stopped
     environment:
@@ -197,7 +197,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${HOST_PORT_GRAFANA:-3000}:3000"
     # Графана стартует только тогда, когда Прометей полностью готов отдавать данные
     depends_on:
       prometheus:

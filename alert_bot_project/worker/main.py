@@ -437,6 +437,7 @@ async def process_single_stream_payload(
                 release_lock_script,
             )
         except SQLAlchemyError:
+            WORKER_ERRORS.inc()
             await redis_client.delete(dedup_key)
             return
 

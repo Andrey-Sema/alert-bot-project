@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+from alert_bot_project.core_shared.metrics import WORKER_ERRORS
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.worker.main import (
     _resolve_target_users,
@@ -94,3 +95,33 @@ class TestWorkerMainInfrastructure:
 
         mock_redis.xack.assert_called_once_with("alerts_stream", "workers_group", "999-0")
         mock_redis.set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_single_stream_payload_increments_worker_errors_on_db_failure(self) -> None:
+        """Провал БД під час резолву отримувачів мусить бути видимим у worker_errors_total,
+        інакше алертинг на цю деградацію просто не спрацює."""
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = None  # немає кеша/офіційної тривоги -> failsafe=True за замовчуванням
+        mock_redis.set.return_value = True  # дедуп-лок і лок білда кешу обидва "успішно" зайняті
+        mock_redis.smembers.return_value = set()
+        mock_redis.incr.return_value = 1  # перша спроба, ще не досягли ліміту ретраїв -> DLQ не чіпаємо
+        mock_broadcaster = MagicMock()
+
+        payload = AlertMessage(message_id=42, chat_id=-100, raw_text="Ракети на місто!").model_dump_json()
+
+        before = WORKER_ERRORS._value.get()
+
+        with patch(
+            "alert_bot_project.worker.main.AsyncSessionLocal", side_effect=SQLAlchemyError("Supabase connection dead")
+        ):
+            await process_single_stream_payload(
+                redis_msg_id="42-0",
+                raw_json=payload,
+                redis_client=mock_redis,
+                broadcaster=mock_broadcaster,
+                release_lock_script=AsyncMock(),
+            )
+
+        after = WORKER_ERRORS._value.get()
+        assert after == before + 1
+        mock_broadcaster.fire_and_forget_message.assert_not_called()

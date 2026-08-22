@@ -7,8 +7,8 @@ from alert_bot_project.core_shared.config import config
 engine = create_async_engine(
     config.DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=config.DB_POOL_SIZE,
+    max_overflow=config.DB_MAX_OVERFLOW,
     echo=False,
     connect_args={
         "timeout": 5,

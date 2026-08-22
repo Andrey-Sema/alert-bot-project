@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from alert_bot_project.bot.keyboards.builders import MENU_INFO, MENU_MAIN, build_back_to_main_keyboard, build_main_menu
 from alert_bot_project.bot.keyboards.messages import INFO_TEXT, WELCOME_TEXT
+from alert_bot_project.core_shared.privacy import hash_peer_id
 from alert_bot_project.database.crud import get_or_create_user
 
 logger = logging.getLogger("bot.handlers.start")
@@ -22,7 +23,7 @@ async def process_start_command(message: Message, db_session: AsyncSession) -> N
 
     try:
         await get_or_create_user(db_session, user_id)
-        logger.info("User ID %d successfully initiated /start command session.", user_id)
+        logger.info("User %s successfully initiated /start command session.", hash_peer_id(user_id))
     except SQLAlchemyError:
         # ✅ СЕНЬОР-ФИКС: Избыточный перехват OperationalError убран, так как он наследуется от SQLAlchemyError.
         # Заодно переведено на канонический .exception()
