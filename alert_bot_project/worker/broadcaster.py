@@ -276,6 +276,9 @@ class Broadcaster:
         if step > 1 and not isinstance(event_id, str):
             await self._finish_failed_job(message_id, raw_payload, "missing event identity")
             return
+        if isinstance(event_id, str) and await self.redis.get(f"delivery:stage:{event_id}:{step}") == "sent":
+            await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+            return
         if step > 1:
             source_chat_id = job.get("source_chat_id")
             source_message_id = job.get("source_message_id")

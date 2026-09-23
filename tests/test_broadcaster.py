@@ -145,6 +145,16 @@ async def test_deleted_generation_suppresses_old_first_stage(mock_bot: AsyncMock
 
 
 @pytest.mark.asyncio
+async def test_replayed_already_sent_stage_is_not_sent_twice(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    mock_redis.get.side_effect = lambda key: "sent" if key == "delivery:stage:-100:42:777:1" else None
+    payload = json.dumps({"event_id": "-100:42:777", "chat_id": 777, "step": 1, "text": "old"})
+    await broadcaster._deliver_one("123-0", {"payload": payload})
+    mock_bot.send_message.assert_not_awaited()
+    mock_redis.xack.assert_awaited_once_with("delivery_stream", "delivery_workers", "123-0")
+
+
+@pytest.mark.asyncio
 async def test_source_context_is_html_escaped(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
     broadcaster = Broadcaster(mock_bot, mock_redis)
     await broadcaster.enqueue_alert(
