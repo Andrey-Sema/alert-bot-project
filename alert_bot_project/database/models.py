@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, func, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, String, func, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -53,3 +53,16 @@ class UserSettings(Base):
     def triggers_set(self) -> set[str]:
         """Инкапсулирует связь один-ко-многим в удобный плоский хэш-сет строк триггеров."""
         return {t.trigger_word for t in self.triggers_rel}
+
+
+class UserActivityDaily(Base):
+    """One compact row per user/day for opt-in flow and actual 30-day MAU."""
+
+    __tablename__ = "user_activity_daily"
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("user_settings.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    activity_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    interacted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    delivered: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))

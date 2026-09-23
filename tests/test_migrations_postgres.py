@@ -61,6 +61,15 @@ async def test_upgrade_adopts_legacy_schema_and_protects_data_api() -> None:
         await connection.execute("DROP TABLE user_triggers, user_settings CASCADE")
         await _alembic("upgrade", "head")
         assert await connection.fetchval("SELECT count(*) FROM user_settings") == 0
+        assert await connection.fetchval(
+            "SELECT relrowsecurity FROM pg_class WHERE oid = 'user_activity_daily'::regclass"
+        )
+        await connection.execute("INSERT INTO user_settings (user_id) VALUES (456)")
+        await connection.execute(
+            "INSERT INTO user_activity_daily (user_id, activity_date, interacted) VALUES (456, CURRENT_DATE, true)"
+        )
+        await connection.execute("DELETE FROM user_settings WHERE user_id = 456")
+        assert await connection.fetchval("SELECT count(*) FROM user_activity_daily WHERE user_id = 456") == 0
         await _alembic("upgrade", "head")
     finally:
         await connection.close()

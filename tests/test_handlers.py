@@ -32,7 +32,8 @@ class TestStartHandlers:
 
         mock_get_user.return_value = UserSettings(user_id=77777)
 
-        await process_start_command(mock_message, db_session=mock_db_session)
+        with patch("alert_bot_project.bot.handlers.start.redis_client.delete", new_callable=AsyncMock):
+            await process_start_command(mock_message, db_session=mock_db_session)
 
         mock_get_user.assert_called_once_with(mock_db_session, 77777)
         mock_message.answer.assert_called_once()

@@ -1,7 +1,7 @@
 # ============================================================
 # STAGE 1: Builder
 # ============================================================
-FROM python:3.11.9-slim AS builder
+FROM python:3.11.9-slim@sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317 AS builder
 
 WORKDIR /build
 
@@ -12,16 +12,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Сначала копируем ТОЛЬКО файл зависимостей для правильного кэширования слоёв
-COPY requirements.txt .
+COPY requirements.lock .
 
 # Объединяем апгрейд pip и установку пакетов в один RUN.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir --prefix=/install -r requirements.txt
+    && pip install --no-cache-dir --require-hashes --prefix=/install -r requirements.lock
 
 # ============================================================
 # STAGE 2: Runner
 # ============================================================
-FROM python:3.11.9-slim AS runner
+FROM python:3.11.9-slim@sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317 AS runner
 
 LABEL description="OdesaAlert Bot — Air threat monitoring system"
 

@@ -23,7 +23,7 @@ services:
   # FILE: docker-compose.yml
 
   redis:
-    image: redis:7.2-alpine
+    image: redis:7.2-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
     container_name: odesa_alert_redis
     restart: unless-stopped
     command: redis-server --appendonly yes --appendfsync always --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is strictly required in .env}
@@ -39,7 +39,7 @@ services:
       - alert_network
 
   redis-exporter:
-    image: oliver006/redis_exporter:latest
+    image: oliver006/redis_exporter@sha256:ca3abd5f19da6c87e96038ba08aaa3dfaab34dc649834584c4d6880b05952fef
     container_name: odesa_alert_redis_exporter
     restart: unless-stopped
     environment:
@@ -148,7 +148,7 @@ services:
   # =========================================================================
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
     container_name: odesa_alert_prometheus
     restart: unless-stopped
     volumes:
@@ -173,7 +173,7 @@ services:
       - alert_network
 
   alertmanager:
-    image: prom/alertmanager:latest
+    image: prom/alertmanager@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
     container_name: odesa_alert_alertmanager
     restart: unless-stopped
     volumes:
@@ -189,7 +189,7 @@ services:
       - alert_network
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
     container_name: odesa_alert_grafana
     restart: unless-stopped
     environment:
