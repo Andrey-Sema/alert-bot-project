@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 from alert_bot_project.database.crud import (
     add_user_trigger,
     get_or_create_user,
+    get_target_user_ids_page,
     get_users_by_trigger_and_category,
     remove_user_trigger,
     update_user_mute,
@@ -170,3 +171,18 @@ class TestCrudPropertyBased:
         result = await get_users_by_trigger_and_category(mock_session, categories, triggers)
         assert result == []
         assert mock_session.execute.call_count == 1
+
+
+@pytest.mark.asyncio
+@settings(max_examples=30)
+@given(after_id=st.integers(min_value=1, max_value=10**12), page_size=st.integers(min_value=1, max_value=1000))
+async def test_target_id_page_is_bounded_and_parameterized(after_id: int, page_size: int) -> None:
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [after_id + 1]
+    session.execute.return_value = result
+    ids = await get_target_user_ids_page(session, {"Ракети"}, {"center"}, after_user_id=after_id, page_size=page_size)
+    assert ids == [after_id + 1]
+    stmt = session.execute.call_args.args[0]
+    assert [column.key for column in stmt.selected_columns] == ["user_id"]
+    assert stmt._limit_clause.value == page_size

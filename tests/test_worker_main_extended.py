@@ -70,7 +70,7 @@ class TestWorkerMainInfrastructure:
 
             # Проверяем, что бракованная задача реально ушла в DLQ, а из основного стрима сделан XACK
             mock_redis.xadd.assert_called_once_with(
-                "dead_letter_queue", {"payload": raw_payload, "error": "Supabase connection dead"}, maxlen=10000
+                "dead_letter_queue", {"payload": raw_payload, "error": "SQLAlchemyError"}
             )
             mock_redis.xack.assert_called_once_with("alerts_stream", "workers_group", "111-0")
 

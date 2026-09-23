@@ -17,7 +17,12 @@ def mock_redis() -> AsyncMock:
 
 @pytest.fixture
 def mock_session() -> AsyncMock:
-    return AsyncMock()
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar.return_value = False
+    result.scalar_one.return_value = 0
+    session.execute.return_value = result
+    return session
 
 
 @pytest.fixture
@@ -57,6 +62,19 @@ class TestToggleLocation:
 
 class TestAddCustomTrigger:
     @pytest.mark.asyncio
+    async def test_db_commit_failure_cannot_publish_trigger_cache(self, user_service: UserService) -> None:
+        mock_user = MagicMock()
+        mock_user.triggers_set = set()
+        user_service.session.commit.side_effect = RuntimeError("rollback")
+        with (
+            patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
+            patch("alert_bot_project.services.user_service.add_user_trigger", return_value=True),
+            pytest.raises(RuntimeError),
+        ):
+            await user_service.add_custom_trigger(12345, "new_phrase")
+        user_service.redis.sadd.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_success_adds_to_redis(self, user_service: UserService) -> None:
         mock_user = MagicMock()
         mock_user.triggers_set = {"existing_custom"}
@@ -93,8 +111,9 @@ class TestAddCustomTrigger:
             patch("alert_bot_project.services.user_service.add_user_trigger", return_value=True),
         ):
             user_service.redis.sadd.side_effect = ConnectionError("Connection refused by Redis broker")
-            with pytest.raises(ConnectionError):
-                await user_service.add_custom_trigger(12345, "аварийный_сектор")
+            success, _ = await user_service.add_custom_trigger(12345, "аварийный_сектор")
+            assert success is True
+            user_service.session.commit.assert_awaited_once()
 
 
 class TestDeleteCustomTrigger:
@@ -111,7 +130,7 @@ class TestDeleteCustomTrigger:
             mock_result.scalar.return_value = False
             user_service.session.execute.return_value = mock_result
 
-            success, msg = await user_service.delete_custom_trigger(12345, "my_phrase")
+            success, _msg = await user_service.delete_custom_trigger(12345, "my_phrase")
 
             assert success is True
             user_service.redis.srem.assert_called_once_with("global_custom_triggers", "my_phrase")

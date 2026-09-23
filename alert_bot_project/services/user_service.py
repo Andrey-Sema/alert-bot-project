@@ -3,10 +3,17 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from redis.asyncio import Redis
-from sqlalchemy import exists, select
+from redis.exceptions import RedisError
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alert_bot_project.core_shared.constants import KYIV_TZ, MAX_CUSTOM_TRIGGERS, ODESA_LOCS, OUTSIDE_LOCS
+from alert_bot_project.core_shared.constants import (
+    KYIV_TZ,
+    MAX_CUSTOM_TRIGGERS,
+    MAX_GLOBAL_CUSTOM_TRIGGERS,
+    ODESA_LOCS,
+    OUTSIDE_LOCS,
+)
 from alert_bot_project.database.crud import (
     add_user_trigger,
     get_or_create_user,
@@ -32,9 +39,12 @@ class UserService:
             await add_user_trigger(self.session, user_id, location_key)
 
         await self.session.refresh(user, attribute_names=["triggers_rel"])
+        await self.session.commit()
         return user.triggers_set
 
     async def add_custom_trigger(self, user_id: int, trigger_word: str) -> tuple[bool, str]:
+        if not 3 <= len(trigger_word) <= 30:
+            return False, "Довжина фрази має бути від 3 до 30 символів."
         user = await get_or_create_user(self.session, user_id)
         static_keys = set(ODESA_LOCS.keys()) | set(OUTSIDE_LOCS.keys())
         custom_count = len([t for t in user.triggers_set if t not in static_keys])
@@ -43,15 +53,33 @@ class UserService:
         if custom_count >= MAX_CUSTOM_TRIGGERS:
             return False, f"🚫 Ви вже досягли ліміту у {MAX_CUSTOM_TRIGGERS} кастомних локацій."
 
+        # Serialize new distinct phrase registrations across bot replicas.
+        await self.session.execute(select(func.pg_advisory_xact_lock(1987763)))
+        exists_result = await self.session.execute(select(exists().where(UserTrigger.trigger_word == trigger_word)))
+        if not exists_result.scalar():
+            count_result = await self.session.execute(
+                select(func.count(func.distinct(UserTrigger.trigger_word))).where(
+                    UserTrigger.trigger_word.not_in(static_keys)
+                )
+            )
+            if int(count_result.scalar_one()) >= MAX_GLOBAL_CUSTOM_TRIGGERS:
+                return False, "Глобальний ліміт користувацьких фраз досягнуто."
+
         success = await add_user_trigger(self.session, user_id, trigger_word)
         if success:
-            await self.redis.sadd("global_custom_triggers", trigger_word)  # type: ignore[misc]
+            await self.session.commit()
+            try:
+                await self.redis.sadd("global_custom_triggers", trigger_word)  # type: ignore[misc]
+                await self.redis.incr("global_custom_triggers:version")
+            except RedisError:
+                logger.exception("Trigger cache update failed after commit; periodic reconciliation will repair it")
             return True, "Локацію додано"
 
         return False, "⚠️ Не вдалося зберегти кастомну локацію."
 
     async def delete_custom_trigger(self, user_id: int, trigger_word: str) -> tuple[bool, str]:
         await remove_user_trigger(self.session, user_id, trigger_word)
+        await self.session.commit()
 
         user = await get_or_create_user(self.session, user_id)
         await self.session.refresh(user, attribute_names=["triggers_rel"])
@@ -59,7 +87,11 @@ class UserService:
         stmt = select(exists().where(UserTrigger.trigger_word == trigger_word))
         res = await self.session.execute(stmt)
         if not res.scalar():
-            await self.redis.srem("global_custom_triggers", trigger_word)  # type: ignore[misc]
+            try:
+                await self.redis.srem("global_custom_triggers", trigger_word)  # type: ignore[misc]
+                await self.redis.incr("global_custom_triggers:version")
+            except RedisError:
+                logger.exception("Trigger cache invalidation failed after commit; reconciliation will repair it")
 
         return True, "Локацію видалено"
 
@@ -73,7 +105,11 @@ class UserService:
         if preset == "clear":
             text_reply = "Звук увімкнено"
             await update_user_mute(self.session, user_id, None)
-            await self.redis.delete(f"user_mute:{user_id}")
+            await self.session.commit()
+            try:
+                await self.redis.delete(f"user_mute:{user_id}")
+            except RedisError:
+                logger.exception("Mute cache deletion failed after commit; DB remains authoritative")
             return text_reply
 
         elif preset in ("1", "2", "4"):
@@ -94,7 +130,11 @@ class UserService:
             raise ValueError(f"Unknown mute preset: {preset}")
 
         await update_user_mute(self.session, user_id, until)
-        await self.redis.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
+        await self.session.commit()
+        try:
+            await self.redis.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
+        except RedisError:
+            logger.exception("Mute cache update failed after commit; DB remains authoritative")
         return text_reply
 
     async def acknowledge_alert(self, user_id: int) -> str:
@@ -102,6 +142,10 @@ class UserService:
         until = datetime.now(UTC) + timedelta(minutes=10)
 
         await update_user_mute(self.session, user_id, until)
-        await self.redis.set(f"user_mute:{user_id}", "1", ex=600)
+        await self.session.commit()
+        try:
+            await self.redis.set(f"user_mute:{user_id}", "1", ex=600)
+        except RedisError:
+            logger.exception("Acknowledgement cache update failed after commit; DB remains authoritative")
 
         return "Сигнал прийнято"

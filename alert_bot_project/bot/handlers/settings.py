@@ -120,6 +120,7 @@ async def toggle_threat_category(
         categories.append(callback_data.category)
 
     user.potvory = categories
+    await db_session.commit()
 
     await cast(Message, callback.message).edit_reply_markup(reply_markup=build_threat_categories_keyboard(categories))
     await callback.answer(text="Налаштування категорій повітряних загроз оновлено")

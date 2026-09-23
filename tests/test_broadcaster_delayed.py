@@ -22,13 +22,16 @@ async def test_delayed_transfer_uses_both_stream_and_zset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_muted_delayed_job_acknowledged_without_sending() -> None:
+async def test_db_muted_delayed_job_acknowledged_without_sending() -> None:
     redis_client = MagicMock()
     redis_client.exists = AsyncMock(return_value=True)
     redis_client.get = AsyncMock(return_value="sent")
     redis_client.xack = AsyncMock()
     broadcaster = Broadcaster(AsyncMock(), redis_client)
-    with patch.object(broadcaster, "_is_night", return_value=True):
+    with (
+        patch.object(broadcaster, "_is_night", return_value=True),
+        patch.object(broadcaster, "_db_mute_active", return_value=True),
+    ):
         await broadcaster._deliver_one(
             "123-0",
             {"payload": json.dumps({"event_id": "test", "chat_id": 555, "step": 2, "text": "repeat", "silent": False})},
