@@ -21,9 +21,8 @@ from redis.exceptions import RedisError, ResponseError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from alert_bot_project.bot.keyboards.builders import build_acknowledge_keyboard
 from alert_bot_project.core_shared.config import config
-from alert_bot_project.core_shared.constants import ALERT_FIRST, KYIV_TZ
+from alert_bot_project.core_shared.constants import KYIV_TZ
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import (
     ALERTS_PROCESSED,
@@ -39,6 +38,7 @@ from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserTrigger
 from alert_bot_project.services.ukrainealarm import AlarmStatePoller
 from alert_bot_project.worker.broadcaster import Broadcaster
+from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
 
 setup_logging("worker")
 logger = logging.getLogger("worker.main")
@@ -194,7 +194,7 @@ async def init_redis_consumer_group(redis_client: Redis) -> None:
             groups = await redis_client.xinfo_groups(STREAM_NAME)
             if any(g["name"] == GROUP_NAME for g in groups):
                 return
-        await redis_client.xgroup_create(name=STREAM_NAME, groupname=GROUP_NAME, id="$", mkstream=True)
+        await redis_client.xgroup_create(name=STREAM_NAME, groupname=GROUP_NAME, id="0-0", mkstream=True)
     except ResponseError as e:
         if "BUSYGROUP" not in str(e):
             raise
@@ -206,6 +206,8 @@ async def monitor_dlq_backlog(redis_client: Redis) -> None:
             if await redis_client.exists("dead_letter_queue"):
                 dlq_depth = await redis_client.xlen("dead_letter_queue")
                 DLQ_SIZE.set(dlq_depth)
+            await trim_acknowledged_stream(redis_client, STREAM_NAME)
+            await trim_acknowledged_stream(redis_client, Broadcaster.delivery_stream_name)
         except asyncio.CancelledError:
             raise
         except RedisError:
@@ -331,18 +333,7 @@ async def _validate_payload(redis_client: Redis, redis_msg_id: str, raw_json: st
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return None
 
-    if (datetime.now(UTC) - alert_data.timestamp).total_seconds() > 600:
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-        return None
-
     return alert_data
-
-
-async def _acquire_dedup_lock(redis_client: Redis, alert_data: AlertMessage) -> str | None:
-    """Повертає ключ дедуплікації, якщо повідомлення ще не оброблялося, інакше None."""
-    dedup_key = f"processed_msg:{alert_data.chat_id}:{alert_data.message_id}"
-    acquired = await redis_client.set(dedup_key, "1", ex=600, nx=True)
-    return dedup_key if acquired else None
 
 
 def _resolve_trigger_words(
@@ -379,11 +370,12 @@ async def _filter_muted_users(redis_client: Redis, user_ids: list[int]) -> list[
     return [u for u, m in zip(user_ids, mutes, strict=False) if not m]
 
 
-def _dispatch_alerts(broadcaster: Broadcaster, active_users: list[int]) -> None:
-    alert_markup = build_acknowledge_keyboard()
+async def _dispatch_alerts(
+    broadcaster: Broadcaster, alert_data: AlertMessage, active_users: list[int], *, stale: bool = False
+) -> None:
+    """Persist each recipient before acknowledging the source stream entry."""
     for u_id in active_users:
-        broadcaster.fire_and_forget_message(u_id, ALERT_FIRST, reply_markup=alert_markup, disable_notification=False)
-        broadcaster.schedule_delayed_alerts(u_id, disable_notification=False)
+        await broadcaster.enqueue_alert(alert_data.chat_id, alert_data.message_id, u_id, stale=stale)
 
 
 async def process_single_stream_payload(
@@ -396,11 +388,7 @@ async def process_single_stream_payload(
     alert_data = await _validate_payload(redis_client, redis_msg_id, raw_json)
     if alert_data is None:
         return
-
-    dedup_key = await _acquire_dedup_lock(redis_client, alert_data)
-    if dedup_key is None:
-        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-        return
+    stale = (datetime.now(UTC) - alert_data.timestamp).total_seconds() > 600
 
     with PROCESSING_TIME.time():
         analysis = TextProcessor.parse_message(alert_data.raw_text)
@@ -412,7 +400,6 @@ async def process_single_stream_payload(
 
         trigger_words = _resolve_trigger_words(analysis, matched_custom, official_alarm_active)
         if trigger_words is None:
-            await redis_client.delete(dedup_key)
             await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
             return
 
@@ -437,21 +424,18 @@ async def process_single_stream_payload(
                 release_lock_script,
             )
         except SQLAlchemyError:
-            await redis_client.delete(dedup_key)
             return
 
         if not user_ids_list:
-            await redis_client.delete(dedup_key)
             await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
             return
 
         active_users = await _filter_muted_users(redis_client, user_ids_list)
-        if not active_users or not is_night_siren_interval_active():
-            await redis_client.delete(dedup_key)
+        if not active_users or (not stale and not is_night_siren_interval_active()):
             await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
             return
 
-        _dispatch_alerts(broadcaster, active_users)
+        await _dispatch_alerts(broadcaster, alert_data, active_users, stale=stale)
 
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         await redis_client.delete(f"retry_count:{redis_msg_id}")
@@ -584,7 +568,10 @@ async def main() -> None:
     await sync_global_custom_triggers(redis_client)
 
     broadcaster = Broadcaster(bot, redis_client)
-    broadcaster.start()
+    await broadcaster.ensure_delivery_group()
+    delivery_daemons = [
+        asyncio.create_task(broadcaster.process_delivery_stream(i)) for i in range(broadcaster.workers_count)
+    ]
 
     delayed_daemon = asyncio.create_task(broadcaster.process_delayed_alerts())
     recovery_daemon = asyncio.create_task(auto_claim_pending_tasks(redis_client, broadcaster, release_lock_script))
@@ -612,13 +599,15 @@ async def main() -> None:
     recovery_daemon.cancel()
     dlq_daemon.cancel()
     alarm_daemon.cancel()
+    for daemon in delivery_daemons:
+        daemon.cancel()
 
-    await asyncio.gather(delayed_daemon, recovery_daemon, dlq_daemon, alarm_daemon, return_exceptions=True)
-    await broadcaster.close()
+    await asyncio.gather(
+        delayed_daemon, recovery_daemon, dlq_daemon, alarm_daemon, *delivery_daemons, return_exceptions=True
+    )
 
-    with contextlib.suppress(RedisError):
-        await redis_client.xgroup_delconsumer(STREAM_NAME, GROUP_NAME, CONSUMER_NAME)
-
+    # Keep pending entries owned by this consumer on shutdown. XAUTOCLAIM
+    # reassigns them after a restart; DELCONSUMER would orphan their payloads.
     await redis_client.close()
     await bot.session.close()
 

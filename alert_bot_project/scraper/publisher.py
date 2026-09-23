@@ -29,7 +29,9 @@ class RedisPublisher:
         assert self._redis is not None
 
         try:
-            msg_id: str = await self._redis.xadd(self.stream_name, {"payload": json_data}, maxlen=10000)
+            # Never trim by length here: a consumer may still need an older entry.
+            # The worker trims only IDs below every consumer group's safe floor.
+            msg_id: str = await self._redis.xadd(self.stream_name, {"payload": json_data})
             logger.info("📨 Повідомлення записано в Stream (ID: %s)", msg_id)
             return msg_id
 

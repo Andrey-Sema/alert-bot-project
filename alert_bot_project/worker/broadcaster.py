@@ -1,22 +1,29 @@
+"""Durable per-recipient delivery of first and delayed Telegram alerts."""
+
 import asyncio
 import hashlib
 import hmac
 import json
 import logging
+import os
+import socket
 import time
-from asyncio import Task
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.types import InlineKeyboardMarkup
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 
+from alert_bot_project.bot.keyboards.builders import build_acknowledge_keyboard
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.constants import (
     ALERT_DELAY_1,
     ALERT_DELAY_2,
+    ALERT_FIRST,
     ALERT_SECOND,
     ALERT_THIRD,
     KYIV_TZ,
@@ -24,30 +31,43 @@ from alert_bot_project.core_shared.constants import (
 
 logger = logging.getLogger("worker.broadcaster")
 
-POP_MATURE_TASKS_LUA = """
-local key = KEYS[1]
-local max_score = ARGV[1]
-local count = ARGV[2]
-
-local elements = redis.call('ZRANGEBYSCORE', key, '-inf', max_score, 'LIMIT', 0, count)
-if #elements > 0 then
-    redis.call('ZREMRANGEBYSCORE', key, '-inf', max_score)
+# The marker, first delivery job and both delayed jobs are one Redis operation.
+# Replaying a partially-fanned-out source post cannot duplicate recipients.
+ENQUEUE_ALERT_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 0 then
+    redis.call('XADD', KEYS[2], '*', 'payload', ARGV[1])
+    if ARGV[6] == '0' then
+        redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3], ARGV[4], ARGV[5])
+    end
+    redis.call('SET', KEYS[1], '1', 'EX', 604800)
+    return 1
 end
-return elements
+return 0
+"""
+
+# Transfer exactly the returned due members to the durable stream, atomically.
+# Moving directly avoids the crash window between pop and a Python XADD call.
+POP_MATURE_TASKS_LUA = """
+local elements = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])
+for _, element in ipairs(elements) do
+    redis.call('XADD', KEYS[2], '*', 'payload', element)
+    redis.call('ZREM', KEYS[1], element)
+end
+return #elements
 """
 
 
 class Broadcaster:
+    delivery_stream_name = "delivery_stream"
+    delivery_group_name = "delivery_workers"
+    delivery_dlq_name = "delivery_dead_letter_queue"
+
     def __init__(self, bot: Bot, redis_client: Redis, workers_count: int = 15):
         self.bot = bot
         self.redis = redis_client
         self.workers_count = workers_count
         self.delayed_queue_key = "delayed_alerts_queue"
-        self.queue: asyncio.Queue[tuple[int, str, InlineKeyboardMarkup | None, bool]] = asyncio.Queue(maxsize=10000)
-        self._workers: list[Task[None]] = []
         self._salt = config.API_HASH.encode()
-        self._background_tasks: set[Task[None]] = set()
-
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
         self._night_end = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
         self._tz = ZoneInfo(KYIV_TZ)
@@ -55,31 +75,42 @@ class Broadcaster:
     def _hash_id(self, chat_id: int) -> str:
         return hmac.new(self._salt, str(chat_id).encode(), hashlib.sha256).hexdigest()[:16]
 
-    def start(self) -> None:
-        # ✅ ФИКС С СОНАРОМ (python:S7503): Убран избыточный async/await, так как создание тасков синхронно
-        if not self._workers:
-            self._workers = [asyncio.create_task(self._queue_worker()) for _ in range(self.workers_count)]
+    def _is_night(self) -> bool:
+        now = datetime.now(self._tz).time()
+        if self._night_start > self._night_end:
+            return now >= self._night_start or now <= self._night_end
+        return self._night_start <= now <= self._night_end
 
-    async def close(self) -> None:
-        logger.info("Очікування завершення розсилки повідомлень у черзі...")
-        await self.queue.join()
-        for w in self._workers:
-            w.cancel()
-        await asyncio.gather(*self._workers, return_exceptions=True)
-        logger.info("Воркери розсилки успешно остановлены.")
-
-    async def _queue_worker(self) -> None:
-        while True:
-            try:
-                chat_id, text, reply_markup, disable_notification = await self.queue.get()
-                try:
-                    await self.send_single_message(chat_id, text, reply_markup, disable_notification)
-                finally:
-                    self.queue.task_done()
-            except asyncio.CancelledError:
+    async def ensure_delivery_group(self) -> None:
+        try:
+            await self.redis.xgroup_create(self.delivery_stream_name, self.delivery_group_name, id="0-0", mkstream=True)
+        except ResponseError as exc:
+            if "BUSYGROUP" not in str(exc):
                 raise
-            except Exception:
-                logger.exception("Queue worker exception")
+
+    async def enqueue_alert(
+        self, source_chat_id: int, source_message_id: int, chat_id: int, *, stale: bool = False
+    ) -> bool:
+        """Persist all three stages once per source event and recipient."""
+        identity = f"{source_chat_id}:{source_message_id}:{chat_id}"
+        first_text = (
+            "⚠️ Затримане повідомлення про загрозу. Воно може бути неактуальним; "
+            "перевірте поточний стан в офіційних джерелах."
+            if stale
+            else ALERT_FIRST
+        )
+        first = json.dumps({"event_id": identity, "chat_id": chat_id, "step": 1, "text": first_text, "silent": stale})
+        second = json.dumps(
+            {"event_id": identity, "chat_id": chat_id, "step": 2, "text": ALERT_SECOND, "silent": False}
+        )
+        third = json.dumps({"event_id": identity, "chat_id": chat_id, "step": 3, "text": ALERT_THIRD, "silent": False})
+        now = int(time.time())
+        script = self.redis.register_script(ENQUEUE_ALERT_LUA)
+        added = await script(
+            keys=[f"delivery:enqueued:{identity}", self.delivery_stream_name, self.delayed_queue_key],
+            args=[first, now + ALERT_DELAY_1, second, now + ALERT_DELAY_1 + ALERT_DELAY_2, third, int(stale)],
+        )
+        return bool(added)
 
     async def send_single_message(
         self,
@@ -103,106 +134,150 @@ class Broadcaster:
                 )
                 await asyncio.sleep(0.04)
                 return True
-            except TelegramRetryAfter as e:
-                wait_duration = min(e.retry_after, max_wait_seconds - total_time_waited)
-                logger.warning("Telegram API 429. Ожидание %s сек для peer: %s", wait_duration, peer_hash)
+            except TelegramRetryAfter as exc:
+                wait_duration = min(exc.retry_after, max_wait_seconds - total_time_waited)
+                logger.warning("Telegram API 429. Waiting %s seconds for peer %s", wait_duration, peer_hash)
                 await asyncio.sleep(wait_duration)
                 total_time_waited += wait_duration
             except TelegramAPIError:
-                logger.exception("Telegram API ошибка для peer %s", peer_hash)
+                logger.exception("Telegram API error for peer %s", peer_hash)
                 return False
             except Exception:
-                logger.exception("Транспортная ошибка для peer %s", peer_hash)
+                logger.exception("Telegram transport error for peer %s", peer_hash)
                 return False
 
-        logger.error("Таймаут доставки превышен для peer %s.", peer_hash)
+        logger.error("Telegram delivery timeout for peer %s", peer_hash)
         return False
 
-    def fire_and_forget_message(
-        self,
-        chat_id: int,
-        text: str,
-        reply_markup: InlineKeyboardMarkup | None = None,
-        disable_notification: bool = False,
-    ) -> None:
+    async def _finish_failed_job(self, message_id: str, payload: str, reason: str) -> None:
+        retry_key = f"delivery:retry:{message_id}"
+        attempts = await self.redis.incr(retry_key)
+        await self.redis.expire(retry_key, 86400)
+        if attempts < 5:
+            # Leave the job pending. XAUTOCLAIM retries after its idle lease.
+            logger.warning("Delivery %s failed (%s), attempt %d/5", message_id, reason, attempts)
+            return
         try:
-            self.queue.put_nowait((chat_id, text, reply_markup, disable_notification))
-        except asyncio.QueueFull:
-            logger.warning(
-                "Внутренняя очередь переполнена. Запуск фоновой принудительной записи для peer %s",
-                self._hash_id(chat_id),
-            )
-            task = asyncio.create_task(self.queue.put((chat_id, text, reply_markup, disable_notification)))
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+            job = json.loads(payload)
+            stage_key = f"delivery:stage:{job['event_id']}:{job['step']}"
+        except (ValueError, KeyError, TypeError):
+            stage_key = None
+        pipe = self.redis.pipeline(transaction=True)
+        pipe.xadd(self.delivery_dlq_name, {"payload": payload, "reason": reason, "source_id": message_id})
+        if stage_key:
+            pipe.set(stage_key, "failed", ex=604800)
+        pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+        pipe.delete(retry_key)
+        await pipe.execute()
+        logger.error("Delivery %s moved to DLQ after five failures", message_id)
 
-    async def _execute_scheduling(self, chat_id: int, disable_notification: bool) -> None:
+    async def _deliver_one(self, message_id: str, data: dict[str, str]) -> None:
+        raw_payload = data.get("payload", "")
         try:
-            now_unix = int(time.time())
-            task_step_2 = {"chat_id": chat_id, "step": 2, "text": ALERT_SECOND, "silent": disable_notification}
-            task_step_3 = {"chat_id": chat_id, "step": 3, "text": ALERT_THIRD, "silent": disable_notification}
-
-            await self.redis.zadd(
-                self.delayed_queue_key,
-                {
-                    json.dumps(task_step_2): now_unix + ALERT_DELAY_1,
-                    json.dumps(task_step_3): now_unix + ALERT_DELAY_1 + ALERT_DELAY_2,
-                },
-            )
-        except Exception:
-            logger.exception("Сбой записи в отложенную очередь для peer %s", self._hash_id(chat_id))
-
-    def schedule_delayed_alerts(self, chat_id: int, disable_notification: bool) -> None:
-        task = asyncio.create_task(self._execute_scheduling(chat_id, disable_notification))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-
-    async def _process_single_delayed_task(self, task_raw: str) -> None:
-        """✅ СЕНЬОР-ФИКС: Вынесено в отдельный метод для декомпозиции сложности (Cognitive Complexity)."""
-        try:
-            task_data = json.loads(task_raw)
-        except json.JSONDecodeError:
-            logger.exception("Сбой парсинга JSON отложенной задачи")
+            job: dict[str, Any] = json.loads(raw_payload)
+            chat_id = int(job["chat_id"])
+            step = int(job["step"])
+            text = str(job["text"])
+            if step not in (1, 2, 3):
+                raise ValueError("invalid delivery step")
+        except (ValueError, KeyError, TypeError) as exc:
+            await self._finish_failed_job(message_id, raw_payload, f"invalid job: {exc}")
             return
 
-        user_id = task_data["chat_id"]
+        event_id = job.get("event_id")
+        if step > 1 and not isinstance(event_id, str):
+            await self._finish_failed_job(message_id, raw_payload, "missing event identity")
+            return
+        if step > 1:
+            prior_state = await self.redis.get(f"delivery:stage:{event_id}:{step - 1}")
+            if prior_state == "failed":
+                pipe = self.redis.pipeline(transaction=True)
+                pipe.xadd(self.delivery_dlq_name, {"payload": raw_payload, "reason": "previous stage failed"})
+                pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                await pipe.execute()
+                return
+            if prior_state != "sent":
+                # Requeue the delayed stage until the previous stage succeeds.
+                pipe = self.redis.pipeline(transaction=True)
+                pipe.zadd(self.delayed_queue_key, {raw_payload: int(time.time()) + 10})
+                pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                await pipe.execute()
+                return
 
-        if await self.redis.exists(f"user_mute:{user_id}"):
-            logger.debug("Отложенное уведомление пропущено: peer %s находится в режиме MUTE", self._hash_id(user_id))
+        # Acknowledgement or daytime cutoff intentionally suppresses a delayed
+        # stage. The first stage was already selected during the night.
+        if step > 1 and (not self._is_night() or await self.redis.exists(f"user_mute:{chat_id}")):
+            await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
             return
 
-        self.fire_and_forget_message(
-            chat_id=user_id, text=task_data["text"], disable_notification=task_data.get("silent", False)
+        sent = await self.send_single_message(
+            chat_id,
+            text,
+            reply_markup=build_acknowledge_keyboard() if step == 1 else None,
+            disable_notification=bool(job.get("silent", False)),
         )
+        if sent:
+            pipe = self.redis.pipeline(transaction=True)
+            if isinstance(event_id, str):
+                pipe.set(f"delivery:stage:{event_id}:{step}", "sent", ex=604800)
+            pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+            await pipe.execute()
+            await self.redis.delete(f"delivery:retry:{message_id}")
+        else:
+            await self._finish_failed_job(message_id, raw_payload, "Telegram API or transport error")
+
+    async def process_delivery_stream(self, worker_index: int) -> None:
+        """Consume new jobs and reclaim jobs left pending by failed processes."""
+        consumer = f"delivery_{socket.gethostname()}_{os.getpid()}_{worker_index}"
+        next_start_id = "0-0"
+        while True:
+            try:
+                claimed = await self.redis.xautoclaim(
+                    self.delivery_stream_name,
+                    self.delivery_group_name,
+                    consumer,
+                    # send_single_message can wait up to 180s on flood control.
+                    # Do not let another process steal a job while it is sending.
+                    min_idle_time=max(240000, (config.TELEGRAM_MAX_RETRY_SECONDS + 60) * 1000),
+                    start_id=next_start_id,
+                    count=20,
+                )
+                next_start_id = claimed[0]
+                for message_id, data in claimed[1]:
+                    await self._deliver_one(message_id, data)
+                incoming = await self.redis.xreadgroup(
+                    self.delivery_group_name,
+                    consumer,
+                    {self.delivery_stream_name: ">"},
+                    count=20,
+                    block=1000,
+                )
+                for _stream, messages in incoming:
+                    for message_id, data in messages:
+                        await self._deliver_one(message_id, data)
+            except asyncio.CancelledError:
+                raise
+            except ResponseError as exc:
+                if "NOGROUP" in str(exc):
+                    await self.ensure_delivery_group()
+                else:
+                    logger.exception("Delivery stream response error")
+                await asyncio.sleep(2)
+            except Exception:
+                logger.exception("Delivery stream worker failed; pending jobs will be reclaimed")
+                await asyncio.sleep(2)
 
     async def process_delayed_alerts(self) -> None:
         script = self.redis.register_script(POP_MATURE_TASKS_LUA)
         while True:
             try:
-                now_unix = int(time.time())
-                tasks = await script(keys=[self.delayed_queue_key], args=[now_unix, 50])
-
-                if not tasks:
-                    await asyncio.sleep(2)
-                    continue
-
-                now_time = datetime.now(self._tz).time()
-                if self._night_start > self._night_end:
-                    is_night = now_time >= self._night_start or now_time <= self._night_end
-                else:
-                    is_night = self._night_start <= now_time <= self._night_end
-
-                if not is_night:
-                    logger.debug("Delayed alert matured during daytime. Strict cutoff active, dropping tasks.")
-                    continue
-
-                for task_raw in tasks:
-                    await self._process_single_delayed_task(task_raw)
-
-                await asyncio.sleep(0.05)
-
+                moved = await script(
+                    keys=[self.delayed_queue_key, self.delivery_stream_name],
+                    args=[int(time.time()), 50],
+                )
+                await asyncio.sleep(0.05 if moved else 2)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Сбой демона отложенных сообщений")
+                logger.exception("Delayed delivery transfer failed")
                 await asyncio.sleep(2)

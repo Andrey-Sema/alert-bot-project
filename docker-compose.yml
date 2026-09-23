@@ -26,7 +26,7 @@ services:
     image: redis:7.2-alpine
     container_name: odesa_alert_redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is strictly required in .env}
+    command: redis-server --appendonly yes --appendfsync always --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is strictly required in .env}
     volumes:
       - redis_data:/data
     healthcheck:
