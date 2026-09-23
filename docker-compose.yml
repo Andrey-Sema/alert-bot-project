@@ -77,6 +77,7 @@ services:
     command: python -m alert_bot_project.scraper.main
     volumes:
       - ./data/session:/data/session
+      - scraper_outbox:/data/outbox
       - shared_logs:/data/logs
     deploy:
       resources:
@@ -207,6 +208,8 @@ services:
 
 volumes:
   redis_data:
+    driver: local
+  scraper_outbox:
     driver: local
   shared_logs:
     driver: local

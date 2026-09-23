@@ -8,11 +8,16 @@ logger = logging.getLogger("core_shared.metrics")
 # --- Скрейпер Метрики ---
 SCRAPER_MESSAGES = Counter("scraper_messages_total", "Total messages intercepted by Pyrogram scraper")
 SCRAPER_ERRORS = Counter("scraper_errors_total", "Total errors occurred during message interception")
+SCRAPER_OUTBOX_DEPTH = Gauge("scraper_outbox_depth", "Posts persisted locally pending Redis acceptance")
 
 # --- Воркер Метрики ---
 ALERTS_PROCESSED = Counter("worker_alerts_processed_total", "Total actionable alerts dispatched to users")
 WORKER_ERRORS = Counter("worker_errors_total", "Total errors caught inside the main worker execution loop")
 DLQ_SIZE = Gauge("worker_dlq_size", "Current absolute depth of the Dead Letter Queue in Redis")
+EXPIRED_ALERTS = Counter("worker_expired_alerts_total", "Source alerts recovered after freshness cutoff")
+DELIVERY_PERMANENT_FAILURES = Counter(
+    "worker_delivery_permanent_failures_total", "Permanent Telegram delivery failures"
+)
 PROCESSING_TIME = Histogram(
     "worker_processing_duration_seconds",
     "Time spent analyzing text, querying DB, and generating target user lists",

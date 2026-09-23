@@ -125,6 +125,7 @@ async def test_source_is_not_acknowledged_when_durable_fanout_fails() -> None:
 @pytest.mark.asyncio
 async def test_stale_pending_source_completes_fanout_with_historical_notice() -> None:
     redis_client = AsyncMock()
+    redis_client.register_script = MagicMock(return_value=AsyncMock(return_value=1))
     redis_client.smembers.return_value = set()
     redis_client.mget.return_value = [None, None]
     broadcaster = MagicMock()

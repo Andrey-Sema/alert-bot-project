@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import random
 import signal
 
 from pyrogram import Client, filters  # type: ignore[attr-defined]
@@ -10,8 +11,14 @@ from alert_bot_project.core_shared.config import config
 
 # ✅ ФИКС 1: Импортируем наш централизованный логгер проекта
 from alert_bot_project.core_shared.logging_config import setup_logging
-from alert_bot_project.core_shared.metrics import SCRAPER_ERRORS, SCRAPER_MESSAGES, start_metrics_server
+from alert_bot_project.core_shared.metrics import (
+    SCRAPER_ERRORS,
+    SCRAPER_MESSAGES,
+    SCRAPER_OUTBOX_DEPTH,
+    start_metrics_server,
+)
 from alert_bot_project.core_shared.schemas import AlertMessage
+from alert_bot_project.scraper.outbox import ScraperOutbox
 from alert_bot_project.scraper.publisher import RedisPublisher
 
 # ✅ ФИКС 1: Заменяем дефолтный basicConfig на структурированный ротационный логгер.
@@ -29,6 +36,7 @@ else:
     app = Client(name="twink_account", api_id=config.API_ID, api_hash=config.API_HASH, workdir=SESSION_DIR)
 
 publisher = RedisPublisher()
+outbox = ScraperOutbox(os.getenv("SCRAPER_OUTBOX_PATH", "/data/outbox/scraper.sqlite3"))
 shutdown_event = asyncio.Event()
 
 
@@ -51,25 +59,46 @@ async def handle_channel_post(client: Client, message: Message) -> None:
     # JSON генерируется ровно один раз, разгружая CPU при повторных попытках отправки.
     json_payload = alert_payload.model_dump_json()
 
+    # A confirmed local SQLite commit precedes every Redis publish attempt.
+    await outbox.put(message.chat.id, message.id, json_payload)
     max_retries = 3
     for attempt in range(max_retries):
         try:
             # Публикуем уже готовый спарсенный JSON-пайлоад
-            await publisher.publish_message(json_payload)
+            await publisher.publish_message(json_payload, message.chat.id, message.id)
+            await outbox.delete(message.chat.id, message.id)
             break
         except Exception as exc:
             SCRAPER_ERRORS.inc()
-            wait_time = 2**attempt
+            wait_time = 2**attempt + random.uniform(0, 0.5)  # noqa: S311  # nosec B311
             logger.error(
-                "Failed downstream message transmission (attempt %d/%d): %s. Retrying in %ds...",
+                "Failed downstream message transmission (attempt %d/%d): %s. Retrying in %.2fs...",
                 attempt + 1,
                 max_retries,
                 exc,
                 wait_time,
             )
-            await asyncio.sleep(wait_time)
+            if attempt + 1 < max_retries:
+                await asyncio.sleep(wait_time)
     else:
-        logger.critical("🚨 MESSAGE PERMANENTLY LOST after %d retries! Message ID: %s", max_retries, message.id)
+        logger.error("Post %s remains in durable outbox after %d attempts", message.id, max_retries)
+
+
+async def replay_outbox() -> None:
+    while not shutdown_event.is_set():
+        try:
+            pending = await outbox.pending()
+            SCRAPER_OUTBOX_DEPTH.set(await outbox.count())
+            for chat_id, message_id, payload in pending:
+                await publisher.publish_message(payload, chat_id, message_id)
+                await outbox.delete(chat_id, message_id)
+            await asyncio.sleep(0.1 if len(pending) == 100 else 5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            SCRAPER_ERRORS.inc()
+            logger.exception("Outbox replay failed; posts remain on disk")
+            await asyncio.sleep(5)
 
 
 async def stop_services() -> None:
@@ -100,13 +129,14 @@ async def main() -> None:
     start_metrics_server(config.METRICS_PORT_SCRAPER)
 
     setup_signal_handlers()
-    await publisher.connect()
-
     logger.info("Starting Pyrogram client infrastructure tracking layer...")
     await app.start()
+    replay_task = asyncio.create_task(replay_outbox())
     logger.info("Scraper background subsystem engine online.")
 
     await shutdown_event.wait()
+    replay_task.cancel()
+    await asyncio.gather(replay_task, return_exceptions=True)
     logger.info("Subsystem execution terminated.")
 
 

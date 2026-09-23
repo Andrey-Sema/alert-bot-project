@@ -27,6 +27,7 @@ from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import (
     ALERTS_PROCESSED,
     DLQ_SIZE,
+    EXPIRED_ALERTS,
     PROCESSING_TIME,
     WORKER_ERRORS,
     start_metrics_server,
@@ -66,6 +67,13 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 else
     return 0
 end
+"""
+
+AUDIT_EXPIRED_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+redis.call('XADD', KEYS[2], '*', 'source_id', ARGV[1], 'payload', ARGV[2], 'reason', 'older_than_600s')
+redis.call('SET', KEYS[1], '1', 'EX', 604800)
+return 1
 """
 
 # Тип скрипта звільнення розподіленого локу. Передається явно через параметри
@@ -389,6 +397,13 @@ async def process_single_stream_payload(
     if alert_data is None:
         return
     stale = (datetime.now(UTC) - alert_data.timestamp).total_seconds() > 600
+    if stale:
+        audit_script = redis_client.register_script(AUDIT_EXPIRED_LUA)
+        if await audit_script(
+            keys=[f"expired:audited:{redis_msg_id}", "expired_alerts_queue"], args=[redis_msg_id, raw_json]
+        ):
+            EXPIRED_ALERTS.inc()
+            logger.warning("Recovered expired source alert %s as historical notice", redis_msg_id)
 
     with PROCESSING_TIME.time():
         analysis = TextProcessor.parse_message(alert_data.raw_text)

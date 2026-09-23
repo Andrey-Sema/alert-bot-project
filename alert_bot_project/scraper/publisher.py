@@ -1,4 +1,5 @@
 import logging
+from contextlib import suppress
 
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, RedisError
@@ -6,6 +7,13 @@ from redis.exceptions import ConnectionError, RedisError
 from alert_bot_project.core_shared.config import config
 
 logger = logging.getLogger("scraper.publisher")
+
+PUBLISH_ONCE_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+local id = redis.call('XADD', KEYS[2], '*', 'payload', ARGV[1])
+redis.call('SET', KEYS[1], id)
+return id
+"""
 
 
 class RedisPublisher:
@@ -18,27 +26,36 @@ class RedisPublisher:
         """Ініціалізує з'єднання з пулом Redis Streams."""
         if not self._redis:
             redis_client = Redis.from_url(self.redis_url, decode_responses=True)
-            await redis_client.ping()
+            try:
+                await redis_client.ping()
+            except Exception:
+                await redis_client.aclose()
+                raise
             self._redis = redis_client
             logger.info("🔌 Підключення до Redis Streams установлено та перевірено")
 
-    async def publish_message(self, json_data: str) -> str:
-        """Відправляє повідомлення в персистентний Redis Stream з обмеженням довжини."""
+    async def publish_message(self, json_data: str, chat_id: int, message_id: int) -> str:
+        """Publish a source post once, including after an uncertain network failure."""
         if not self._redis:
             await self.connect()
         assert self._redis is not None
 
         try:
-            # Never trim by length here: a consumer may still need an older entry.
-            # The worker trims only IDs below every consumer group's safe floor.
-            msg_id: str = await self._redis.xadd(self.stream_name, {"payload": json_data})
+            script = self._redis.register_script(PUBLISH_ONCE_LUA)
+            msg_id: str = await script(
+                keys=[f"source:published:{chat_id}:{message_id}", self.stream_name], args=[json_data]
+            )
             logger.info("📨 Повідомлення записано в Stream (ID: %s)", msg_id)
             return msg_id
 
         except (ConnectionError, TimeoutError):
             # ✅ ФИКС С СОНАРОМ (python:S8572): Использование .exception() вместо ручной передачи net_err
             logger.exception("❌ Мережевий збій транспорту Redis. Скидання пулу підключень...")
+            stale_client = self._redis
             self._redis = None
+            if stale_client is not None:
+                with suppress(Exception):
+                    await stale_client.aclose()
             raise
 
         except RedisError:

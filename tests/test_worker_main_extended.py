@@ -75,9 +75,10 @@ class TestWorkerMainInfrastructure:
             mock_redis.xack.assert_called_once_with("alerts_stream", "workers_group", "111-0")
 
     @pytest.mark.asyncio
-    async def test_process_single_stream_payload_skips_outdated_messages(self) -> None:
-        """Если сообщение протухло в очереди и ему больше 10 минут, просто подтверждаем (XACK) и выкидываем."""
+    async def test_process_single_stream_payload_audits_outdated_messages(self) -> None:
+        """Old source posts are recorded before any acknowledgement."""
         mock_redis = AsyncMock()
+        mock_redis.register_script = MagicMock(return_value=AsyncMock(return_value=1))
         mock_broadcaster = MagicMock()
 
         # Создаем древний пайлоад
@@ -93,4 +94,5 @@ class TestWorkerMainInfrastructure:
         )
 
         mock_redis.xack.assert_called_once_with("alerts_stream", "workers_group", "999-0")
+        mock_redis.register_script.return_value.assert_awaited_once()
         mock_redis.set.assert_not_called()
