@@ -178,13 +178,13 @@ services:
     restart: unless-stopped
     volumes:
       - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    secrets:
+      - alertmanager_bot_token
+      - alertmanager_chat_id
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
     ports:
       - "127.0.0.1:9093:9093"
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
     networks:
       - alert_network
 
@@ -217,3 +217,9 @@ volumes:
 networks:
   alert_network:
     driver: bridge
+
+secrets:
+  alertmanager_bot_token:
+    file: ./secrets/alertmanager_bot_token
+  alertmanager_chat_id:
+    file: ./secrets/alertmanager_chat_id

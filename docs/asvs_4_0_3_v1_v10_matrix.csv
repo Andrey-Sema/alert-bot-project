@@ -1,0 +1,224 @@
+asvs_id,chapter,section,level1,level2,level3,applicability,status,evidence,verification,owner,residual_risk
+v4.0.3-V1.1.1,,Secure Software Development Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.1.2,,Secure Software Development Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.1.3,,Secure Software Development Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.1.4,,Secure Software Development Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.1.5,,Secure Software Development Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.1.6,,Secure Software Development Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.1.7,,Secure Software Development Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.2.1,,Authentication Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.2.2,,Authentication Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.2.3,,Authentication Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.2.4,,Authentication Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.4.1,,Access Control Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.4.2,,Access Control Architecture,,,,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.4.3,,Access Control Architecture,,,,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.4.4,,Access Control Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.4.5,,Access Control Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.5.1,,Input and Output Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.5.2,,Input and Output Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.5.3,,Input and Output Architecture,,✓,✓,applicable,partial,alert_bot_project/core_shared/schemas.py; bot/handlers/settings.py,Fuzz validation and invalid callback tests,Security owner (assign),Custom trigger parser still needs adversarial corpus review
+v4.0.3-V1.5.4,,Input and Output Architecture,,✓,✓,applicable,partial,alert_bot_project/worker/broadcaster.py,test_source_context_is_html_escaped,Security owner (assign),Other Telegram HTML paths need review
+v4.0.3-V1.6.1,,Cryptographic Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.6.2,,Cryptographic Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.6.3,,Cryptographic Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.6.4,,Cryptographic Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.7.1,,"Errors, Logging and Auditing Architecture",,✓,✓,applicable,partial,alert_bot_project/core_shared/logging_config.py,Review JSON log output,Security owner (assign),Cross-service correlation incomplete
+v4.0.3-V1.7.2,,"Errors, Logging and Auditing Architecture",,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.8.1,,Data Protection and Privacy Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.8.2,,Data Protection and Privacy Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.9.1,,Communications Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.9.2,,Communications Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.10.1,,Malicious Software Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.11.1,,Business Logic Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.11.2,,Business Logic Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.11.3,,Business Logic Architecture,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.12.1,,Secure File Upload Architecture,,,,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.12.2,,Secure File Upload Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.14.1,,Configuration Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.14.2,,Configuration Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.14.3,,Configuration Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.14.4,,Configuration Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.14.5,,Configuration Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V1.14.6,,Configuration Architecture,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.1,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.2,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.3,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.4,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.5,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.6,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.7,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.8,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.9,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.10,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.11,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.1.12,,Password Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.2.1,,General Authenticator Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.2.2,,General Authenticator Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.2.3,,General Authenticator Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.2.4,,General Authenticator Security,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.2.5,,General Authenticator Security,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.2.6,,General Authenticator Security,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.2.7,,General Authenticator Security,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.3.1,,Authenticator Lifecycle,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.3.2,,Authenticator Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.3.3,,Authenticator Lifecycle,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.4.1,,Credential Storage,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.4.2,,Credential Storage,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.4.3,,Credential Storage,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.4.4,,Credential Storage,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.4.5,,Credential Storage,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.5.1,,Credential Recovery,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.5.2,,Credential Recovery,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.5.3,,Credential Recovery,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.5.4,,Credential Recovery,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.5.5,,Credential Recovery,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.5.6,,Credential Recovery,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.5.7,,Credential Recovery,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.6.1,,Look-up Secret Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.6.2,,Look-up Secret Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.6.3,,Look-up Secret Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.7.1,,Out of Band Verifier,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.7.2,,Out of Band Verifier,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.7.3,,Out of Band Verifier,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.7.4,,Out of Band Verifier,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.7.5,,Out of Band Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.7.6,,Out of Band Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.8.1,,One Time Verifier,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.8.2,,One Time Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.8.3,,One Time Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.8.4,,One Time Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.8.5,,One Time Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.8.6,,One Time Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.8.7,,One Time Verifier,,o,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.9.1,,Cryptographic Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.9.2,,Cryptographic Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.9.3,,Cryptographic Verifier,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.10.1,,Service Authentication,,OS assisted,HSM,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.10.2,,Service Authentication,,OS assisted,HSM,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.10.3,,Service Authentication,,OS assisted,HSM,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V2.10.4,,Service Authentication,,OS assisted,HSM,applicable,partial,alert_bot_project/core_shared/config.py; docs/data_capacity_security.md,test_secret_file_overrides_environment,Security owner (assign),Production secret manager and rotation drill pending
+v4.0.3-V3.1.1,,Fundamental Session Management Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.2.1,,Session Binding,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.2.2,,Session Binding,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.2.3,,Session Binding,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.2.4,,Session Binding,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.3.1,,Session Termination,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.3.2,,Session Termination,30 days,"12 hours or 30 minutes of inactivity, 2FA optional","12 hours or 15 minutes of inactivity, with 2FA",review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.3.3,,Session Termination,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.3.4,,Session Termination,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.4.1,,Cookie-based Session Management,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.4.2,,Cookie-based Session Management,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.4.3,,Cookie-based Session Management,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.4.4,,Cookie-based Session Management,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.4.5,,Cookie-based Session Management,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.5.1,,Token-based Session Management,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.5.2,,Token-based Session Management,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.5.3,,Token-based Session Management,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.6.1,,Federated Re-authentication,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.6.2,,Federated Re-authentication,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V3.7.1,,Defenses Against Session Management Exploits,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.1.1,,General Access Control Design,✓,✓,✓,applicable,partial,bot/handlers/start.py; bot/handlers/settings.py,Test Telegram from_user ownership,Security owner (assign),Admin RBAC and callback review pending
+v4.0.3-V4.1.2,,General Access Control Design,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.1.3,,General Access Control Design,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.1.4,,General Access Control Design,,,,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.1.5,,General Access Control Design,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.2.1,,Operation Level Access Control,✓,✓,✓,applicable,partial,bot/handlers/start.py; services/privacy.py,test_delete_cascades_and_scrubs_user_jobs,Security owner (assign),No independent IDOR penetration test
+v4.0.3-V4.2.2,,Operation Level Access Control,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.3.1,,Other Access Control Considerations,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.3.2,,Other Access Control Considerations,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V4.3.3,,Other Access Control Considerations,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.1.1,,Input Validation,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.1.2,,Input Validation,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.1.3,,Input Validation,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.1.4,,Input Validation,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.1.5,,Input Validation,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.1,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.2,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.3,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.4,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.5,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.6,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.7,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.2.8,,Sanitization and Sandboxing,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.1,,Output Encoding and Injection Prevention,✓,✓,✓,applicable,partial,alert_bot_project/worker/broadcaster.py,test_source_context_is_html_escaped,Security owner (assign),Other HTML templates need review
+v4.0.3-V5.3.2,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.3,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.4,,Output Encoding and Injection Prevention,✓,✓,✓,applicable,implemented_ci,alert_bot_project/database/crud.py; tests/test_migrations_postgres.py,CI PostgreSQL migration and ORM query tests,Security owner (assign),Manual SQL and search path audit remain
+v4.0.3-V5.3.5,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.6,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.7,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.8,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.9,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.3.10,,Output Encoding and Injection Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.4.1,,"Memory, String, and Unmanaged Code",,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.4.2,,"Memory, String, and Unmanaged Code",,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.4.3,,"Memory, String, and Unmanaged Code",,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.5.1,,Deserialization Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.5.2,,Deserialization Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.5.3,,Deserialization Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V5.5.4,,Deserialization Prevention,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.1.1,,Data Classification,,✓,✓,external,external,PostgreSQL/Redis host configuration,Review at-rest encryption on production provider,Security owner (assign),Cannot verify provider encryption from repository
+v4.0.3-V6.1.2,,Data Classification,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.1.3,,Data Classification,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.1,,Algorithms,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.2,,Algorithms,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.3,,Algorithms,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.4,,Algorithms,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.5,,Algorithms,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.6,,Algorithms,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.7,,Algorithms,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.2.8,,Algorithms,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.3.1,,Random Values,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.3.2,,Random Values,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.3.3,,Random Values,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.4.1,,Secret Management,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V6.4.2,,Secret Management,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.1.1,,Log Content,✓,✓,✓,applicable,partial,alert_bot_project/core_shared/logging_config.py,Inspect production logs for token exposure,Security owner (assign),Runtime logs not accessible
+v4.0.3-V7.1.2,,Log Content,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.1.3,,Log Content,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.1.4,,Log Content,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.2.1,,Log Processing,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.2.2,,Log Processing,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.3.1,,Log Protection,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.3.2,,Log Protection,,,,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.3.3,,Log Protection,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.3.4,,Log Protection,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.4.1,,Error Handling,✓,✓,✓,applicable,partial,bot/handlers/start.py; bot/handlers/settings.py,Test generic failure response,Security owner (assign),Other handlers require audit
+v4.0.3-V7.4.2,,Error Handling,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V7.4.3,,Error Handling,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.1.1,,General Data Protection,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.1.2,,General Data Protection,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.1.3,,General Data Protection,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.1.4,,General Data Protection,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.1.5,,General Data Protection,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.1.6,,General Data Protection,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.2.1,,Client-side Data Protection,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.2.2,,Client-side Data Protection,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.2.3,,Client-side Data Protection,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.1,,Sensitive Private Data,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.2,,Sensitive Private Data,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.3,,Sensitive Private Data,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.4,,Sensitive Private Data,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.5,,Sensitive Private Data,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.6,,Sensitive Private Data,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.7,,Sensitive Private Data,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V8.3.8,,Sensitive Private Data,,✓,✓,applicable,partial,database/activity.py; services/privacy.py; docs/data_capacity_security.md,test_delete_cascades_and_scrubs_user_jobs,Security owner (assign),Backup/log retention owner approval pending
+v4.0.3-V9.1.1,,Client Communication Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V9.1.2,,Client Communication Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V9.1.3,,Client Communication Security,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V9.2.1,,Server Communication Security,,✓,✓,applicable,partial,database/engine.py; migrations/env.py,TLS certificate validation review,Security owner (assign),Live Supabase certificate handshake pending
+v4.0.3-V9.2.2,,Server Communication Security,,✓,✓,applicable,partial,core_shared/config.py; database/engine.py,test_external_redis_without_tls_is_rejected,Security owner (assign),Internal metrics run on isolated bridge without TLS
+v4.0.3-V9.2.3,,Server Communication Security,,✓,✓,applicable,partial,database/engine.py; core_shared/config.py,TLS hostname and Redis scheme tests,Security owner (assign),Live external endpoint proof pending
+v4.0.3-V9.2.4,,Server Communication Security,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V9.2.5,,Server Communication Security,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.1.1,,Code Integrity,,,✓,applicable,implemented_ci,.github/workflows/ci.yaml,"Ruff, Bandit and pip-audit CI",Security owner (assign),Security review still required for logic flaws
+v4.0.3-V10.2.1,,Malicious Code Search,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.2.2,,Malicious Code Search,,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.2.3,,Malicious Code Search,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.2.4,,Malicious Code Search,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.2.5,,Malicious Code Search,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.2.6,,Malicious Code Search,,,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.3.1,,Application Integrity,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.3.2,,Application Integrity,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated
+v4.0.3-V10.3.3,,Application Integrity,✓,✓,✓,review,unverified,,Applicability and evidence review required,Security owner (assign),Control not yet demonstrated

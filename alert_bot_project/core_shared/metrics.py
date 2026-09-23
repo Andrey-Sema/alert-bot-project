@@ -16,6 +16,7 @@ SOURCE_PUBLISHED = Counter("scraper_source_published_total", "Source posts accep
 ALERTS_PROCESSED = Counter("worker_alerts_processed_total", "Total actionable alerts dispatched to users")
 WORKER_ERRORS = Counter("worker_errors_total", "Total errors caught inside the main worker execution loop")
 DLQ_SIZE = Gauge("worker_dlq_size", "Current absolute depth of the Dead Letter Queue in Redis")
+DELIVERY_DLQ_SIZE = Gauge("worker_delivery_dlq_size", "Failed recipient delivery jobs awaiting review")
 EXPIRED_ALERTS = Counter("worker_expired_alerts_total", "Source alerts recovered after freshness cutoff")
 DELIVERY_PERMANENT_FAILURES = Counter(
     "worker_delivery_permanent_failures_total", "Permanent Telegram delivery failures"

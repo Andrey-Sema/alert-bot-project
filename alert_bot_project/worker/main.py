@@ -27,6 +27,7 @@ from alert_bot_project.core_shared.metrics import (
     ALERTS_PROCESSED,
     DELAYED_BACKLOG,
     DELIVERY_BACKLOG,
+    DELIVERY_DLQ_SIZE,
     DELIVERY_OLDEST_AGE,
     DLQ_SIZE,
     EXPIRED_ALERTS,
@@ -188,9 +189,8 @@ async def init_redis_consumer_group(redis_client: Redis) -> None:
 async def monitor_dlq_backlog(redis_client: Redis) -> None:
     while not shutdown_event.is_set():
         try:
-            if await redis_client.exists("dead_letter_queue"):
-                dlq_depth = await redis_client.xlen("dead_letter_queue")
-                DLQ_SIZE.set(dlq_depth)
+            DLQ_SIZE.set(await redis_client.xlen("dead_letter_queue"))
+            DELIVERY_DLQ_SIZE.set(await redis_client.xlen(Broadcaster.delivery_dlq_name))
             await trim_acknowledged_stream(redis_client, STREAM_NAME)
             await trim_acknowledged_stream(redis_client, Broadcaster.delivery_stream_name)
             SOURCE_BACKLOG.set(await redis_client.xlen(STREAM_NAME))

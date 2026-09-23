@@ -83,6 +83,21 @@ jobs:
     - name: Verify container image builds from locked dependencies
       run: docker build --pull -t alert-bot:ci .
 
+    - name: Validate Alertmanager and Prometheus rules
+      run: |
+        mkdir -p "$RUNNER_TEMP/alertmanager-secrets"
+        printf '123456:ci-test' > "$RUNNER_TEMP/alertmanager-secrets/alertmanager_bot_token"
+        printf '123456' > "$RUNNER_TEMP/alertmanager-secrets/alertmanager_chat_id"
+        docker run --rm --entrypoint=/bin/amtool \
+          -v "$GITHUB_WORKSPACE/prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro" \
+          -v "$RUNNER_TEMP/alertmanager-secrets:/run/secrets:ro" \
+          prom/alertmanager@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a \
+          check-config /etc/alertmanager/alertmanager.yml
+        docker run --rm --entrypoint=/bin/promtool \
+          -v "$GITHUB_WORKSPACE/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+          prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0 \
+          check rules /etc/prometheus/alerts.yml
+
     - name: Save release SBOM
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:

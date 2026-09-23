@@ -72,6 +72,15 @@ groups:
           summary: "Черга відкладених сповіщень зростає"
           description: "Відкладених завдань більше 1000 понад п'ять хвилин. Перевірте Telegram та воркер."
 
+      - alert: DeliveryDeadLetterQueueNotEmpty
+        expr: worker_delivery_dlq_size > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Невдалі адресні доставки потребують розбору"
+          description: "У delivery DLQ є повідомлення; перевірте причину перед ручним повтором."
+
       - alert: DeliveryOldestJobStale
         expr: worker_delivery_oldest_age_seconds > 600
         for: 2m
