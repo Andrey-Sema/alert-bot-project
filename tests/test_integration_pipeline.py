@@ -9,7 +9,7 @@ from redis.exceptions import RedisError
 
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
-from alert_bot_project.worker.main import _dispatch_alerts, process_single_stream_payload
+from alert_bot_project.worker.main import _dispatch_alerts, process_single_stream_payload, trigger_matcher
 
 
 @pytest.mark.asyncio
@@ -61,7 +61,7 @@ class TestE2EAlertPipeline:
         mock_user.user_id = 4444
 
         with (
-            patch("alert_bot_project.worker.main.get_users_by_trigger_and_category", return_value=[mock_user]),
+            patch("alert_bot_project.worker.main.get_target_user_ids_page", side_effect=[[mock_user.user_id], []]),
             patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True),
         ):
             # 4. Прогоняем весь этот сквозной пайлоад через процессор воркера
@@ -113,7 +113,7 @@ async def test_source_is_not_acknowledged_when_durable_fanout_fails() -> None:
     payload = AlertMessage(message_id=8, chat_id=-100, raw_text="Ракети на центр").model_dump_json()
     with (
         patch("alert_bot_project.worker.main.check_official_air_alarm", return_value=True),
-        patch("alert_bot_project.worker.main._resolve_target_users", return_value=[123]),
+        patch("alert_bot_project.worker.main.get_target_user_ids_page", return_value=[123]),
         patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True),
         patch("alert_bot_project.worker.main._dispatch_alerts", side_effect=RedisError("outage")),
         pytest.raises(RedisError),
@@ -138,11 +138,31 @@ async def test_stale_pending_source_completes_fanout_with_historical_notice() ->
     ).model_dump_json()
     with (
         patch("alert_bot_project.worker.main.check_official_air_alarm", return_value=True),
-        patch("alert_bot_project.worker.main._resolve_target_users", return_value=[123, 456]),
+        patch("alert_bot_project.worker.main.get_target_user_ids_page", return_value=[123, 456]),
         patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=False),
     ):
         await process_single_stream_payload("1-0", payload, redis_client, broadcaster, AsyncMock())
     assert broadcaster.enqueue_alert.await_count == 2
     broadcaster.enqueue_alert.assert_any_await(-100, 8, 123, stale=True)
     broadcaster.enqueue_alert.assert_any_await(-100, 8, 456, stale=True)
+    redis_client.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_large_fanout_reads_bounded_keyset_pages() -> None:
+    redis_client = AsyncMock()
+    redis_client.get.return_value = "1"
+    broadcaster = MagicMock()
+    broadcaster.enqueue_alert = AsyncMock(return_value=True)
+    pages = [list(range(1, 501)), list(range(501, 1001)), list(range(1001, 1201))]
+    payload = AlertMessage(message_id=18, chat_id=-100, raw_text="Ракети на центр").model_dump_json()
+    with (
+        patch("alert_bot_project.worker.main.check_official_air_alarm", return_value=True),
+        patch("alert_bot_project.worker.main.get_target_user_ids_page", side_effect=pages) as page_query,
+        patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True),
+        patch.object(trigger_matcher, "get_matches", return_value=[]),
+    ):
+        await process_single_stream_payload("18-0", payload, redis_client, broadcaster, AsyncMock())
+    assert broadcaster.enqueue_alert.await_count == 1200
+    assert [call.kwargs["after_user_id"] for call in page_query.await_args_list] == [None, 500, 1000]
     redis_client.xack.assert_awaited_once()

@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -136,3 +137,17 @@ async def test_forbidden_marks_recipient_for_reonboarding(mock_bot: AsyncMock, m
     await broadcaster._deliver_one("123-0", {"payload": payload})
     mock_redis.set.assert_awaited_once_with("telegram:blocked:777", "re_onboarding_required")
     mock_redis.pipeline.return_value.xadd.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_mute_decision_uses_committed_database_state(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = datetime.now(UTC) + timedelta(minutes=5)
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    with patch("alert_bot_project.worker.broadcaster.AsyncSessionLocal") as factory:
+        factory.return_value.__aenter__ = AsyncMock(return_value=session)
+        factory.return_value.__aexit__ = AsyncMock()
+        assert await broadcaster._db_mute_active(777)
+    session.execute.assert_awaited_once()

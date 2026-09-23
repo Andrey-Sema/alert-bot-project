@@ -162,6 +162,7 @@ KR_POTVORY = {
 KYIV_TZ = "Europe/Kyiv"
 DISLOCS_PER_PAGE = 5  # Кількість локацій на одній сторінці меню інлайн-клавіатури
 MAX_CUSTOM_TRIGGERS = 5  # Максимальний ліміт кастомних фраз для одного користувача
+MAX_GLOBAL_CUSTOM_TRIGGERS = 5000  # Bounds matcher memory and cache rebuild cost.
 
 # Тайм-аути між ступенями нічного сповіщення (в секундах)
 ALERT_DELAY_1 = 60  # 1 хвилина до другого сповіщення

@@ -9,7 +9,7 @@ import os
 import socket
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardMarkup
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
+from sqlalchemy import select
 
 from alert_bot_project.bot.keyboards.builders import build_acknowledge_keyboard
 from alert_bot_project.core_shared.config import config
@@ -36,6 +37,8 @@ from alert_bot_project.core_shared.constants import (
     KYIV_TZ,
 )
 from alert_bot_project.core_shared.metrics import DELIVERY_PERMANENT_FAILURES
+from alert_bot_project.database.engine import AsyncSessionLocal
+from alert_bot_project.database.models import UserSettings
 from alert_bot_project.worker.rate_limit import TelegramRateLimiter
 
 logger = logging.getLogger("worker.broadcaster")
@@ -96,6 +99,12 @@ class Broadcaster:
         if self._night_start > self._night_end:
             return now >= self._night_start or now <= self._night_end
         return self._night_start <= now <= self._night_end
+
+    async def _db_mute_active(self, chat_id: int) -> bool:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(UserSettings.muted_until).where(UserSettings.user_id == chat_id))
+            muted_until = result.scalar_one_or_none()
+            return bool(muted_until is not None and muted_until > datetime.now(UTC))
 
     async def ensure_delivery_group(self) -> None:
         try:
@@ -227,7 +236,7 @@ class Broadcaster:
 
         # Acknowledgement or daytime cutoff intentionally suppresses a delayed
         # stage. The first stage was already selected during the night.
-        if step > 1 and (not self._is_night() or await self.redis.exists(f"user_mute:{chat_id}")):
+        if step > 1 and (not self._is_night() or await self._db_mute_active(chat_id)):
             await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
             return
 

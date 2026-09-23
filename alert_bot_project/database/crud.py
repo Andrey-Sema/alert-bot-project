@@ -99,3 +99,36 @@ async def get_users_by_trigger_and_category(
     stmt = select(UserSettings).where(and_(*conditions))
     result = await session.execute(stmt)
     return result.scalars().all()
+
+
+async def get_target_user_ids_page(
+    session: AsyncSession,
+    category_names: set[str],
+    trigger_words: set[str],
+    *,
+    after_user_id: int | None = None,
+    page_size: int = 500,
+) -> list[int]:
+    """Fetch one bounded, stable keyset page without hydrating ORM relationships."""
+    if not category_names:
+        return []
+    if not 1 <= page_size <= 1000:
+        raise ValueError("page_size must be between 1 and 1000")
+
+    now = datetime.now(UTC)
+    conditions = [
+        or_(UserSettings.muted_until.is_(None), UserSettings.muted_until < now),
+        UserSettings.potvory.overlap(sorted(category_names)),
+    ]
+    if trigger_words:
+        conditions.append(
+            exists().where(
+                UserTrigger.user_id == UserSettings.user_id,
+                UserTrigger.trigger_word.in_(sorted(trigger_words)),
+            )
+        )
+    if after_user_id is not None:
+        conditions.append(UserSettings.user_id > after_user_id)
+    stmt = select(UserSettings.user_id).where(and_(*conditions)).order_by(UserSettings.user_id).limit(page_size)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())

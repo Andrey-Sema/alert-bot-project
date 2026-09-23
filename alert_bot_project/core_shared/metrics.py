@@ -18,6 +18,8 @@ EXPIRED_ALERTS = Counter("worker_expired_alerts_total", "Source alerts recovered
 DELIVERY_PERMANENT_FAILURES = Counter(
     "worker_delivery_permanent_failures_total", "Permanent Telegram delivery failures"
 )
+SOURCE_BACKLOG = Gauge("worker_source_stream_depth", "Source stream entries waiting for safe retention")
+DELIVERY_BACKLOG = Gauge("worker_delivery_stream_depth", "Durable delivery entries waiting for safe retention")
 PROCESSING_TIME = Histogram(
     "worker_processing_duration_seconds",
     "Time spent analyzing text, querying DB, and generating target user lists",

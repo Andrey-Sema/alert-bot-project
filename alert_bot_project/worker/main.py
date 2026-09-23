@@ -1,11 +1,9 @@
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import os
 import random
-import re
 import signal
 import socket
 import uuid
@@ -26,19 +24,22 @@ from alert_bot_project.core_shared.constants import KYIV_TZ
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import (
     ALERTS_PROCESSED,
+    DELIVERY_BACKLOG,
     DLQ_SIZE,
     EXPIRED_ALERTS,
     PROCESSING_TIME,
+    SOURCE_BACKLOG,
     WORKER_ERRORS,
     start_metrics_server,
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
-from alert_bot_project.database.crud import get_users_by_trigger_and_category
+from alert_bot_project.database.crud import get_target_user_ids_page, get_users_by_trigger_and_category
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserTrigger
 from alert_bot_project.services.ukrainealarm import AlarmStatePoller
 from alert_bot_project.worker.broadcaster import Broadcaster
+from alert_bot_project.worker.custom_matcher import CustomTriggerMatcher
 from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
 
 setup_logging("worker")
@@ -49,14 +50,12 @@ STREAM_NAME = "alerts_stream"
 GROUP_NAME = "workers_group"
 CONSUMER_NAME = f"worker_{socket.gethostname()}_{os.getpid()}"
 
-_WORD_BOUNDARY = r"(?<![\w])"
-_WORD_BOUNDARY_END = r"(?![\w])"
-
 NIGHT_START = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
 NIGHT_END = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
 
 REDIS_CUSTOM_TRIGGERS_KEY = "global_custom_triggers"
 REDIS_NEW_TRIGGERS_KEY = "global_custom_triggers:new"
+REDIS_TRIGGERS_VERSION_KEY = "global_custom_triggers:version"
 OFFICIAL_ALARM_KEY = "official_alarm_status:odesa"
 
 shutdown_event = asyncio.Event()
@@ -82,45 +81,6 @@ return 1
 # аналізатор (і потенційно виклик до старту main()) міг побачити None замість
 # справжнього скрипта ("release_lock_script is not callable").
 ReleaseLockScript = Callable[..., Awaitable[Any]]
-
-
-class CustomTriggerMatcher:
-    """
-    Тримає ОДИН прекомпільований regex на весь глобальний пул кастомних фраз
-    замість окремого re.compile на кожну фразу. Знижує вартість перевірки
-    одного повідомлення з O(N окремих .search()) до одного проходу regex-двигуна —
-    критично при рості пулу фраз (anti-DoS).
-    """
-
-    def __init__(self) -> None:
-        self._pattern: re.Pattern[str] | None = None
-        self._phrases_by_group: dict[str, str] = {}
-        self.last_hash = ""
-        self._lock = asyncio.Lock()
-
-    async def get_matches(self, normalized_text: str, global_custom: set[str]) -> list[str]:
-        if not global_custom:
-            return []
-
-        async with self._lock:
-            # noinspection PyTypeChecker
-            current_hash = hashlib.md5("".join(sorted(global_custom)).encode(), usedforsecurity=False).hexdigest()
-            if current_hash != self.last_hash:
-                self._phrases_by_group = {f"g{i}": str(t) for i, t in enumerate(global_custom)}
-                alternation = "|".join(
-                    f"(?P<{group}>{re.escape(phrase)}\\w{{0,3}})" for group, phrase in self._phrases_by_group.items()
-                )
-                self._pattern = re.compile(rf"{_WORD_BOUNDARY}(?:{alternation}){_WORD_BOUNDARY_END}")
-                self.last_hash = current_hash
-
-            if not self._pattern:
-                return []
-
-            matches: set[str] = set()
-            for m in self._pattern.finditer(normalized_text):
-                if m.lastgroup:
-                    matches.add(self._phrases_by_group[m.lastgroup])
-            return list(matches)
 
 
 trigger_matcher = CustomTriggerMatcher()
@@ -179,8 +139,13 @@ async def sync_global_custom_triggers(redis_client: Redis) -> None:
         res = await session.execute(stmt)
         triggers = res.scalars().all()
 
+        if set(triggers) == await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY):  # type: ignore[misc]
+            await redis_client.incr(REDIS_TRIGGERS_VERSION_KEY)
+            return
+
         if not triggers:
             await redis_client.delete(REDIS_CUSTOM_TRIGGERS_KEY)
+            await redis_client.incr(REDIS_TRIGGERS_VERSION_KEY)
             return
 
         # redis.asyncio Pipeline-команди — це корутини, їх ОБОВ'ЯЗКОВО треба await-ити
@@ -192,6 +157,7 @@ async def sync_global_custom_triggers(redis_client: Redis) -> None:
         pipe.delete(REDIS_NEW_TRIGGERS_KEY)
         pipe.sadd(REDIS_NEW_TRIGGERS_KEY, *triggers)
         pipe.rename(REDIS_NEW_TRIGGERS_KEY, REDIS_CUSTOM_TRIGGERS_KEY)
+        pipe.incr(REDIS_TRIGGERS_VERSION_KEY)
         await pipe.execute()
         logger.info("Synchronized %d global custom triggers via Pipeline.", len(triggers))
 
@@ -216,11 +182,25 @@ async def monitor_dlq_backlog(redis_client: Redis) -> None:
                 DLQ_SIZE.set(dlq_depth)
             await trim_acknowledged_stream(redis_client, STREAM_NAME)
             await trim_acknowledged_stream(redis_client, Broadcaster.delivery_stream_name)
+            SOURCE_BACKLOG.set(await redis_client.xlen(STREAM_NAME))
+            DELIVERY_BACKLOG.set(await redis_client.xlen(Broadcaster.delivery_stream_name))
         except asyncio.CancelledError:
             raise
         except RedisError:
             logger.exception("Error checking DLQ depth")
 
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(shutdown_event.wait(), timeout=60.0)
+
+
+async def reconcile_custom_triggers(redis_client: Redis) -> None:
+    while not shutdown_event.is_set():
+        try:
+            await sync_global_custom_triggers(redis_client)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Periodic trigger cache reconciliation failed")
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=60.0)
 
@@ -257,7 +237,7 @@ async def _handle_db_failure(redis_client: Redis, redis_msg_id: str, raw_json: s
 
     if current_retries > 5:
         logger.error("Task message ID %s dropped to DLQ.", redis_msg_id)
-        await redis_client.xadd("dead_letter_queue", {"payload": raw_json, "error": str(db_err)}, maxlen=10000)
+        await redis_client.xadd("dead_letter_queue", {"payload": raw_json, "error": type(db_err).__name__})
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         await redis_client.delete(retry_key)
 
@@ -372,12 +352,6 @@ def _resolve_trigger_words(
     return trigger_words
 
 
-async def _filter_muted_users(redis_client: Redis, user_ids: list[int]) -> list[int]:
-    mute_keys = [f"user_mute:{u}" for u in user_ids]
-    mutes = await redis_client.mget(mute_keys)
-    return [u for u, m in zip(user_ids, mutes, strict=False) if not m]
-
-
 async def _dispatch_alerts(
     broadcaster: Broadcaster, alert_data: AlertMessage, active_users: list[int], *, stale: bool = False
 ) -> None:
@@ -409,8 +383,7 @@ async def process_single_stream_payload(
         analysis = TextProcessor.parse_message(alert_data.raw_text)
         normalized_text = TextProcessor.normalize(alert_data.raw_text)
 
-        global_custom = await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY)  # type: ignore[misc]
-        matched_custom = await trigger_matcher.get_matches(normalized_text, global_custom)
+        matched_custom = await trigger_matcher.get_matches(normalized_text, redis_client)
         official_alarm_active = await check_official_air_alarm(redis_client)
 
         trigger_words = _resolve_trigger_words(analysis, matched_custom, official_alarm_active)
@@ -421,36 +394,29 @@ async def process_single_stream_payload(
         if not analysis["categories"]:
             analysis["categories"] = {"Мопеди", "Ракети"}
 
-        sorted_cats = sorted(analysis["categories"])
-        sorted_triggers = sorted(trigger_words)
-        # noinspection PyTypeChecker
-        checksum = hashlib.md5(
-            f"cats:{sorted_cats}|triggers:{sorted_triggers}".encode(), usedforsecurity=False
-        ).hexdigest()
+        if not stale and not is_night_siren_interval_active():
+            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+            return
 
+        after_user_id: int | None = None
         try:
-            user_ids_list = await _resolve_target_users(
-                redis_client,
-                checksum,
-                analysis["categories"],
-                trigger_words,
-                redis_msg_id,
-                raw_json,
-                release_lock_script,
-            )
-        except SQLAlchemyError:
+            while True:
+                async with AsyncSessionLocal() as session:
+                    page = await get_target_user_ids_page(
+                        session,
+                        analysis["categories"],
+                        trigger_words,
+                        after_user_id=after_user_id,
+                    )
+                if not page:
+                    break
+                await _dispatch_alerts(broadcaster, alert_data, page, stale=stale)
+                after_user_id = page[-1]
+                if len(page) < 500:
+                    break
+        except SQLAlchemyError as db_err:
+            await _handle_db_failure(redis_client, redis_msg_id, raw_json, db_err)
             return
-
-        if not user_ids_list:
-            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-            return
-
-        active_users = await _filter_muted_users(redis_client, user_ids_list)
-        if not active_users or (not stale and not is_night_siren_interval_active()):
-            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
-            return
-
-        await _dispatch_alerts(broadcaster, alert_data, active_users, stale=stale)
 
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         await redis_client.delete(f"retry_count:{redis_msg_id}")
@@ -591,6 +557,7 @@ async def main() -> None:
     delayed_daemon = asyncio.create_task(broadcaster.process_delayed_alerts())
     recovery_daemon = asyncio.create_task(auto_claim_pending_tasks(redis_client, broadcaster, release_lock_script))
     dlq_daemon = asyncio.create_task(monitor_dlq_backlog(redis_client))
+    reconcile_daemon = asyncio.create_task(reconcile_custom_triggers(redis_client))
 
     alarm_poller = AlarmStatePoller(redis_client)
     alarm_daemon = asyncio.create_task(alarm_poller.run(shutdown_event))
@@ -613,12 +580,19 @@ async def main() -> None:
     delayed_daemon.cancel()
     recovery_daemon.cancel()
     dlq_daemon.cancel()
+    reconcile_daemon.cancel()
     alarm_daemon.cancel()
     for daemon in delivery_daemons:
         daemon.cancel()
 
     await asyncio.gather(
-        delayed_daemon, recovery_daemon, dlq_daemon, alarm_daemon, *delivery_daemons, return_exceptions=True
+        delayed_daemon,
+        recovery_daemon,
+        dlq_daemon,
+        reconcile_daemon,
+        alarm_daemon,
+        *delivery_daemons,
+        return_exceptions=True,
     )
 
     # Keep pending entries owned by this consumer on shutdown. XAUTOCLAIM
