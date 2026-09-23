@@ -139,7 +139,7 @@ async def sync_global_custom_triggers(redis_client: Redis) -> None:
         res = await session.execute(stmt)
         triggers = res.scalars().all()
 
-        if set(triggers) == await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY):
+        if set(triggers) == await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY):  # type: ignore[misc]
             await redis_client.incr(REDIS_TRIGGERS_VERSION_KEY)
             return
 

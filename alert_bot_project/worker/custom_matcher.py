@@ -72,7 +72,7 @@ class CustomTriggerMatcher:
         version = await redis_client.get("global_custom_triggers:version")
         async with self._lock:
             if not self._loaded or version != self._version:
-                phrases = await redis_client.smembers("global_custom_triggers")
+                phrases = await redis_client.smembers("global_custom_triggers")  # type: ignore[misc]
                 if len(phrases) > MAX_GLOBAL_CUSTOM_TRIGGERS:
                     raise ValueError("global custom trigger limit exceeded")
                 self._build(phrases)
