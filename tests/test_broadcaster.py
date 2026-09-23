@@ -110,6 +110,44 @@ async def test_second_stage_waits_for_first(mock_bot: AsyncMock, mock_redis: Mag
 
 
 @pytest.mark.asyncio
+async def test_clear_after_source_cancels_delayed_stage(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    mock_redis.get.return_value = "43"
+    payload = json.dumps(
+        {
+            "event_id": "-100:42:777",
+            "chat_id": 777,
+            "step": 2,
+            "text": "repeat",
+            "source_chat_id": -100,
+            "source_message_id": 42,
+        }
+    )
+    await broadcaster._deliver_one("123-0", {"payload": payload})
+    mock_redis.get.assert_awaited_once_with("threat:clear_id:-100")
+    mock_bot.send_message.assert_not_awaited()
+    mock_redis.xack.assert_awaited_once_with("delivery_stream", "delivery_workers", "123-0")
+
+
+@pytest.mark.asyncio
+async def test_source_context_is_html_escaped(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    await broadcaster.enqueue_alert(
+        -100,
+        42,
+        777,
+        categories={"Ракети<script>"},
+        locations={"center&port"},
+        source_timestamp=datetime(2026, 9, 23, tzinfo=UTC),
+    )
+    args = mock_redis.register_script.return_value.call_args.kwargs["args"]
+    first = json.loads(args[0])
+    assert "<script>" not in first["text"]
+    assert "center&amp;port" in first["text"]
+    assert first["source_timestamp"] == "2026-09-23T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("exception_type", "status", "reason"),
     [

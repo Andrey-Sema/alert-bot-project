@@ -9,6 +9,8 @@ logger = logging.getLogger("core_shared.metrics")
 SCRAPER_MESSAGES = Counter("scraper_messages_total", "Total messages intercepted by Pyrogram scraper")
 SCRAPER_ERRORS = Counter("scraper_errors_total", "Total errors occurred during message interception")
 SCRAPER_OUTBOX_DEPTH = Gauge("scraper_outbox_depth", "Posts persisted locally pending Redis acceptance")
+SOURCE_PERSISTED = Counter("scraper_source_persisted_total", "Source posts committed to the local outbox")
+SOURCE_PUBLISHED = Counter("scraper_source_published_total", "Source posts accepted by Redis")
 
 # --- Воркер Метрики ---
 ALERTS_PROCESSED = Counter("worker_alerts_processed_total", "Total actionable alerts dispatched to users")
@@ -20,6 +22,16 @@ DELIVERY_PERMANENT_FAILURES = Counter(
 )
 SOURCE_BACKLOG = Gauge("worker_source_stream_depth", "Source stream entries waiting for safe retention")
 DELIVERY_BACKLOG = Gauge("worker_delivery_stream_depth", "Durable delivery entries waiting for safe retention")
+RECIPIENTS_SELECTED = Counter("worker_recipients_selected_total", "Recipient alert jobs accepted for delivery")
+DELIVERY_OUTCOMES = Counter("worker_delivery_outcomes_total", "Telegram delivery outcomes", ["stage", "outcome"])
+DELIVERY_LATENCY = Histogram(
+    "worker_delivery_latency_seconds",
+    "Source post to successful Telegram send",
+    ["stage"],
+    buckets=[1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600],
+)
+DELAYED_BACKLOG = Gauge("worker_delayed_queue_depth", "Scheduled delayed delivery jobs")
+DELIVERY_OLDEST_AGE = Gauge("worker_delivery_oldest_age_seconds", "Age of oldest pending delivery job")
 PROCESSING_TIME = Histogram(
     "worker_processing_duration_seconds",
     "Time spent analyzing text, querying DB, and generating target user lists",

@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -36,7 +37,12 @@ from alert_bot_project.core_shared.constants import (
     ALERT_THIRD,
     KYIV_TZ,
 )
-from alert_bot_project.core_shared.metrics import DELIVERY_PERMANENT_FAILURES
+from alert_bot_project.core_shared.metrics import (
+    DELIVERY_LATENCY,
+    DELIVERY_OUTCOMES,
+    DELIVERY_PERMANENT_FAILURES,
+    RECIPIENTS_SELECTED,
+)
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserSettings
 from alert_bot_project.worker.rate_limit import TelegramRateLimiter
@@ -114,7 +120,15 @@ class Broadcaster:
                 raise
 
     async def enqueue_alert(
-        self, source_chat_id: int, source_message_id: int, chat_id: int, *, stale: bool = False
+        self,
+        source_chat_id: int,
+        source_message_id: int,
+        chat_id: int,
+        *,
+        stale: bool = False,
+        source_timestamp: datetime | None = None,
+        categories: set[str] | None = None,
+        locations: set[str] | None = None,
     ) -> bool:
         """Persist all three stages once per source event and recipient."""
         identity = f"{source_chat_id}:{source_message_id}:{chat_id}"
@@ -124,17 +138,32 @@ class Broadcaster:
             if stale
             else ALERT_FIRST
         )
-        first = json.dumps({"event_id": identity, "chat_id": chat_id, "step": 1, "text": first_text, "silent": stale})
-        second = json.dumps(
-            {"event_id": identity, "chat_id": chat_id, "step": 2, "text": ALERT_SECOND, "silent": False}
-        )
-        third = json.dumps({"event_id": identity, "chat_id": chat_id, "step": 3, "text": ALERT_THIRD, "silent": False})
+        context = [f"Джерело: канал {source_chat_id}, повідомлення {source_message_id}."]
+        if source_timestamp is not None:
+            context.append(f"Час отримання: {source_timestamp.astimezone(self._tz):%Y-%m-%d %H:%M} (Київ).")
+        if categories:
+            context.append("Категорія: " + html.escape(", ".join(sorted(categories))) + ".")
+        if locations:
+            context.append("Згадана локація: " + html.escape(", ".join(sorted(locations))) + ".")
+        first_text += "\n" + "\n".join(context) + "\nПідтвердіть стан в офіційних джерелах."
+        common = {
+            "event_id": identity,
+            "chat_id": chat_id,
+            "source_chat_id": source_chat_id,
+            "source_message_id": source_message_id,
+            "source_timestamp": source_timestamp.isoformat() if source_timestamp else None,
+        }
+        first = json.dumps({**common, "step": 1, "text": first_text, "silent": stale})
+        second = json.dumps({**common, "step": 2, "text": ALERT_SECOND, "silent": False})
+        third = json.dumps({**common, "step": 3, "text": ALERT_THIRD, "silent": False})
         now = int(time.time())
         script = self.redis.register_script(ENQUEUE_ALERT_LUA)
         added = await script(
             keys=[f"delivery:enqueued:{identity}", self.delivery_stream_name, self.delayed_queue_key],
             args=[first, now + ALERT_DELAY_1, second, now + ALERT_DELAY_1 + ALERT_DELAY_2, third, int(stale)],
         )
+        if added:
+            RECIPIENTS_SELECTED.inc()
         return bool(added)
 
     async def send_single_message(
@@ -219,6 +248,14 @@ class Broadcaster:
             await self._finish_failed_job(message_id, raw_payload, "missing event identity")
             return
         if step > 1:
+            source_chat_id = job.get("source_chat_id")
+            source_message_id = job.get("source_message_id")
+            if source_chat_id is not None and source_message_id is not None:
+                clear_id = await self.redis.get(f"threat:clear_id:{int(source_chat_id)}")
+                if clear_id is not None and int(clear_id) > int(source_message_id):
+                    await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                    DELIVERY_OUTCOMES.labels(stage=str(step), outcome="cancelled_clear").inc()
+                    return
             prior_state = await self.redis.get(f"delivery:stage:{event_id}:{step - 1}")
             if prior_state == "failed":
                 pipe = self.redis.pipeline(transaction=True)
@@ -252,6 +289,17 @@ class Broadcaster:
             repeat=step > 1,
         )
         if outcome.status == "sent":
+            DELIVERY_OUTCOMES.labels(stage=str(step), outcome="sent").inc()
+            source_timestamp = job.get("source_timestamp")
+            if isinstance(source_timestamp, str):
+                try:
+                    source_time = datetime.fromisoformat(source_timestamp)
+                    if source_time.tzinfo is not None:
+                        DELIVERY_LATENCY.labels(stage=str(step)).observe(
+                            max(0.0, (datetime.now(UTC) - source_time).total_seconds())
+                        )
+                except ValueError:
+                    logger.warning("Invalid source timestamp in delivery job %s", message_id)
             pipe = self.redis.pipeline(transaction=True)
             if isinstance(event_id, str):
                 pipe.set(f"delivery:stage:{event_id}:{step}", "sent", ex=604800)
@@ -259,6 +307,7 @@ class Broadcaster:
             await pipe.execute()
             await self.redis.delete(f"delivery:retry:{message_id}")
         else:
+            DELIVERY_OUTCOMES.labels(stage=str(step), outcome=outcome.status).inc()
             if outcome.status == "blocked":
                 await self.redis.set(f"telegram:blocked:{chat_id}", "re_onboarding_required")
             if outcome.status in ("blocked", "permanent"):

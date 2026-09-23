@@ -1,12 +1,14 @@
 import asyncio
 import logging
+from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alert_bot_project.database.engine import engine
-from alert_bot_project.database.models import Base, UserTrigger
+from alert_bot_project.database.models import UserTrigger
 
 logger = logging.getLogger("database.migration")
 
@@ -50,15 +52,19 @@ MIGRATION_MAP = {
 }
 
 
+def _upgrade_schema() -> None:
+    alembic_ini = Path(__file__).resolve().parents[2] / "alembic.ini"
+    configuration = Config(str(alembic_ini))
+    command.upgrade(configuration, "head")
+
+
 class LegacyMigrationManager:
     """Вся миграционная логика инкапсулирована в класс для консистентности с проектом."""
 
     @classmethod
     async def init_database_schema(cls) -> None:
-        """Проверяет и инициализирует схему таблиц в базе данных."""
-        logger.info("Перевірка та ініціалізація схеми бази даних...")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        """Apply versioned, transactional Alembic revisions."""
+        await asyncio.to_thread(_upgrade_schema)
 
     @classmethod
     async def run_legacy_keys_migration(cls, session: AsyncSession) -> None:
