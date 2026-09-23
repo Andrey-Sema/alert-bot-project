@@ -8,12 +8,19 @@ import logging
 import os
 import socket
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.types import InlineKeyboardMarkup
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
@@ -28,6 +35,8 @@ from alert_bot_project.core_shared.constants import (
     ALERT_THIRD,
     KYIV_TZ,
 )
+from alert_bot_project.core_shared.metrics import DELIVERY_PERMANENT_FAILURES
+from alert_bot_project.worker.rate_limit import TelegramRateLimiter
 
 logger = logging.getLogger("worker.broadcaster")
 
@@ -57,6 +66,12 @@ return #elements
 """
 
 
+@dataclass(frozen=True)
+class DeliveryOutcome:
+    status: str
+    reason: str = ""
+
+
 class Broadcaster:
     delivery_stream_name = "delivery_stream"
     delivery_group_name = "delivery_workers"
@@ -71,6 +86,7 @@ class Broadcaster:
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
         self._night_end = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
         self._tz = ZoneInfo(KYIV_TZ)
+        self.rate_limiter = TelegramRateLimiter(redis_client)
 
     def _hash_id(self, chat_id: int) -> str:
         return hmac.new(self._salt, str(chat_id).encode(), hashlib.sha256).hexdigest()[:16]
@@ -118,41 +134,46 @@ class Broadcaster:
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         disable_notification: bool = False,
-    ) -> bool:
-        total_time_waited = 0
-        max_wait_seconds = config.TELEGRAM_MAX_RETRY_SECONDS
+        repeat: bool = False,
+    ) -> DeliveryOutcome:
         peer_hash = self._hash_id(chat_id)
+        await self.rate_limiter.acquire(chat_id, repeat=repeat)
+        try:
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+                disable_notification=disable_notification,
+            )
+            return DeliveryOutcome("sent")
+        except TelegramRetryAfter as exc:
+            await self.rate_limiter.pause(exc.retry_after)
+            logger.warning("Telegram 429 for peer %s; retry after %s", peer_hash, exc.retry_after)
+            return DeliveryOutcome("retry", "telegram_429")
+        except TelegramForbiddenError:
+            logger.warning("Telegram recipient blocked bot for peer %s", peer_hash)
+            return DeliveryOutcome("blocked", "telegram_forbidden")
+        except TelegramBadRequest:
+            logger.warning("Telegram rejected message format for peer %s", peer_hash)
+            return DeliveryOutcome("permanent", "telegram_bad_request")
+        except TelegramServerError:
+            logger.warning("Telegram server failure for peer %s", peer_hash)
+            return DeliveryOutcome("retry", "telegram_5xx")
+        except TelegramAPIError:
+            logger.exception("Telegram API error for peer %s", peer_hash)
+            return DeliveryOutcome("retry", "telegram_api")
+        except Exception:
+            logger.exception("Telegram transport error for peer %s", peer_hash)
+            return DeliveryOutcome("retry", "telegram_transport")
 
-        while total_time_waited < max_wait_seconds:
-            try:
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=reply_markup,
-                    disable_notification=disable_notification,
-                )
-                await asyncio.sleep(0.04)
-                return True
-            except TelegramRetryAfter as exc:
-                wait_duration = min(exc.retry_after, max_wait_seconds - total_time_waited)
-                logger.warning("Telegram API 429. Waiting %s seconds for peer %s", wait_duration, peer_hash)
-                await asyncio.sleep(wait_duration)
-                total_time_waited += wait_duration
-            except TelegramAPIError:
-                logger.exception("Telegram API error for peer %s", peer_hash)
-                return False
-            except Exception:
-                logger.exception("Telegram transport error for peer %s", peer_hash)
-                return False
-
-        logger.error("Telegram delivery timeout for peer %s", peer_hash)
-        return False
-
-    async def _finish_failed_job(self, message_id: str, payload: str, reason: str) -> None:
+    async def _finish_failed_job(self, message_id: str, payload: str, reason: str, *, permanent: bool = False) -> None:
         retry_key = f"delivery:retry:{message_id}"
-        attempts = await self.redis.incr(retry_key)
-        await self.redis.expire(retry_key, 86400)
+        if permanent:
+            attempts = 5
+        else:
+            attempts = await self.redis.incr(retry_key)
+            await self.redis.expire(retry_key, 86400)
         if attempts < 5:
             # Leave the job pending. XAUTOCLAIM retries after its idle lease.
             logger.warning("Delivery %s failed (%s), attempt %d/5", message_id, reason, attempts)
@@ -210,13 +231,18 @@ class Broadcaster:
             await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
             return
 
-        sent = await self.send_single_message(
+        if await self.redis.exists(f"telegram:blocked:{chat_id}"):
+            await self._finish_failed_job(message_id, raw_payload, "recipient_blocked", permanent=True)
+            return
+
+        outcome = await self.send_single_message(
             chat_id,
             text,
             reply_markup=build_acknowledge_keyboard() if step == 1 else None,
             disable_notification=bool(job.get("silent", False)),
+            repeat=step > 1,
         )
-        if sent:
+        if outcome.status == "sent":
             pipe = self.redis.pipeline(transaction=True)
             if isinstance(event_id, str):
                 pipe.set(f"delivery:stage:{event_id}:{step}", "sent", ex=604800)
@@ -224,7 +250,13 @@ class Broadcaster:
             await pipe.execute()
             await self.redis.delete(f"delivery:retry:{message_id}")
         else:
-            await self._finish_failed_job(message_id, raw_payload, "Telegram API or transport error")
+            if outcome.status == "blocked":
+                await self.redis.set(f"telegram:blocked:{chat_id}", "re_onboarding_required")
+            if outcome.status in ("blocked", "permanent"):
+                DELIVERY_PERMANENT_FAILURES.inc()
+            await self._finish_failed_job(
+                message_id, raw_payload, outcome.reason, permanent=outcome.status in ("blocked", "permanent")
+            )
 
     async def process_delivery_stream(self, worker_index: int) -> None:
         """Consume new jobs and reclaim jobs left pending by failed processes."""

@@ -2,9 +2,15 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 
-from alert_bot_project.worker.broadcaster import Broadcaster
+from alert_bot_project.worker.broadcaster import Broadcaster, DeliveryOutcome
 
 
 @pytest.fixture
@@ -49,18 +55,20 @@ async def test_send_single_message_handles_flood_control_retry(
     mock_sleep: MagicMock, mock_bot: AsyncMock, mock_redis: MagicMock
 ) -> None:
     broadcaster = Broadcaster(mock_bot, mock_redis)
+    broadcaster.rate_limiter.acquire = AsyncMock()
     mock_bot.send_message.side_effect = [
         TelegramRetryAfter(retry_after=5, method=MagicMock(), message="Flood control"),
         AsyncMock(),
     ]
-    assert await broadcaster.send_single_message(777, "Тест") is True
-    assert mock_bot.send_message.call_count == 2
-    mock_sleep.assert_any_call(5)
+    assert await broadcaster.send_single_message(777, "Тест") == DeliveryOutcome("retry", "telegram_429")
+    assert mock_bot.send_message.call_count == 1
+    mock_sleep.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_failed_send_remains_pending(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
     broadcaster = Broadcaster(mock_bot, mock_redis)
+    broadcaster.rate_limiter.acquire = AsyncMock()
     mock_bot.send_message.side_effect = TelegramAPIError(message="Chat not found", method=MagicMock())
     payload = json.dumps({"chat_id": 777, "step": 1, "text": "alert", "silent": False})
     await broadcaster._deliver_one("123-0", {"payload": payload})
@@ -71,7 +79,9 @@ async def test_failed_send_remains_pending(mock_bot: AsyncMock, mock_redis: Magi
 @pytest.mark.asyncio
 async def test_success_acknowledges_only_after_send(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
     broadcaster = Broadcaster(mock_bot, mock_redis)
-    with patch.object(broadcaster, "send_single_message", new_callable=AsyncMock, return_value=True) as send:
+    with patch.object(
+        broadcaster, "send_single_message", new_callable=AsyncMock, return_value=DeliveryOutcome("sent")
+    ) as send:
         await broadcaster._deliver_one("123-0", {"payload": json.dumps({"chat_id": 777, "step": 1, "text": "a"})})
     send.assert_awaited_once()
     mock_redis.pipeline.return_value.xack.assert_called_once_with("delivery_stream", "delivery_workers", "123-0")
@@ -96,3 +106,33 @@ async def test_second_stage_waits_for_first(mock_bot: AsyncMock, mock_redis: Mag
     pipe = mock_redis.pipeline.return_value
     pipe.zadd.assert_called_once()
     pipe.xack.assert_called_once_with("delivery_stream", "delivery_workers", "123-0")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception_type", "status", "reason"),
+    [
+        (TelegramForbiddenError, "blocked", "telegram_forbidden"),
+        (TelegramBadRequest, "permanent", "telegram_bad_request"),
+        (TelegramServerError, "retry", "telegram_5xx"),
+    ],
+)
+async def test_telegram_error_classification(
+    mock_bot: AsyncMock, mock_redis: MagicMock, exception_type: type[TelegramAPIError], status: str, reason: str
+) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    broadcaster.rate_limiter.acquire = AsyncMock()
+    mock_bot.send_message.side_effect = exception_type(method=MagicMock(), message="failure")
+    assert await broadcaster.send_single_message(777, "alert") == DeliveryOutcome(status, reason)
+
+
+@pytest.mark.asyncio
+async def test_forbidden_marks_recipient_for_reonboarding(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    broadcaster.rate_limiter.acquire = AsyncMock()
+    mock_redis.set = AsyncMock()
+    mock_bot.send_message.side_effect = TelegramForbiddenError(method=MagicMock(), message="blocked")
+    payload = json.dumps({"event_id": "event", "chat_id": 777, "step": 1, "text": "alert"})
+    await broadcaster._deliver_one("123-0", {"payload": payload})
+    mock_redis.set.assert_awaited_once_with("telegram:blocked:777", "re_onboarding_required")
+    mock_redis.pipeline.return_value.xadd.assert_called_once()

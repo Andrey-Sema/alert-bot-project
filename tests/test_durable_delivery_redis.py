@@ -11,8 +11,10 @@ from hypothesis import strategies as st
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
+from alert_bot_project.scraper.publisher import PUBLISH_ONCE_LUA
 from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, Broadcaster
 from alert_bot_project.worker.main import init_redis_consumer_group
+from alert_bot_project.worker.rate_limit import ACQUIRE_SLOT_LUA
 from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
 
 
@@ -131,4 +133,36 @@ async def test_distinct_source_posts_keep_distinct_delayed_stages() -> None:
             "delivery:enqueued:-100:41:777",
             "delivery:enqueued:-100:42:777",
         )
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_source_publish_is_idempotent_after_uncertain_result() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    marker = f"test:published:{suffix}"
+    stream = f"test:source:{suffix}"
+    try:
+        first = await client.eval(PUBLISH_ONCE_LUA, 2, marker, stream, '{"message_id":1}')
+        second = await client.eval(PUBLISH_ONCE_LUA, 2, marker, stream, '{"message_id":1}')
+        assert first != 0
+        assert second == 0
+        assert await client.xlen(stream) == 1
+    finally:
+        await client.delete(marker, stream)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_shared_rate_slot_limits_global_and_per_chat() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    keys = [f"test:rate:global:{suffix}", f"test:rate:chat:{suffix}", f"test:rate:repeat:{suffix}"]
+    try:
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, *keys, 0) == 0
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, *keys, 0) > 0
+        await client.delete(keys[0])
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, *keys, 0) > 0
+    finally:
+        await client.delete(*keys)
         await client.aclose()
