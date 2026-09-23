@@ -1,11 +1,15 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from redis.exceptions import RedisError
 
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
-from alert_bot_project.worker.main import process_single_stream_payload
+from alert_bot_project.worker.main import _dispatch_alerts, process_single_stream_payload
 
 
 @pytest.mark.asyncio
@@ -35,6 +39,7 @@ class TestE2EAlertPipeline:
         # 3. Мокаем транспортную инфраструктуру
         mock_redis = AsyncMock()
         mock_broadcaster = MagicMock()
+        mock_broadcaster.enqueue_alert = AsyncMock(return_value=True)
 
         # Настраиваем ответы кэша и дедупликатора Redis
         async def redis_set_side_effect(key, *args, **kwargs):
@@ -71,9 +76,72 @@ class TestE2EAlertPipeline:
             # 5. Проверяем выполнение бизнес-контрактов системы
             mock_redis.xack.assert_called_once_with("alerts_stream", "workers_group", "1690000000-0")
 
-            mock_broadcaster.fire_and_forget_message.assert_called_once()
-            call_args = mock_broadcaster.fire_and_forget_message.call_args
-            assert call_args[0][0] == 4444
-            assert call_args[1]["disable_notification"] is False
+            mock_broadcaster.enqueue_alert.assert_awaited_once_with(-100123456, 999, 4444, stale=False)
 
-            mock_broadcaster.schedule_delayed_alerts.assert_called_once_with(4444, disable_notification=False)
+
+@pytest.mark.asyncio
+@settings(max_examples=40, deadline=None)
+@given(
+    recipients=st.lists(st.integers(min_value=1, max_value=100000), min_size=2, max_size=20, unique=True),
+    failed_index=st.integers(min_value=0, max_value=19),
+)
+async def test_partial_fanout_stops_without_forgetting_prior_recipients(
+    recipients: list[int], failed_index: int
+) -> None:
+    failed_index %= len(recipients)
+    broadcaster = MagicMock()
+    seen: list[int] = []
+
+    async def enqueue(_chat: int, _message: int, recipient: int, *, stale: bool = False) -> bool:
+        seen.append(recipient)
+        if len(seen) == failed_index + 1:
+            raise RedisError("temporary outage")
+        return True
+
+    broadcaster.enqueue_alert = AsyncMock(side_effect=enqueue)
+    alert = AlertMessage(message_id=8, chat_id=-100, raw_text="Ракети на центр")
+    with pytest.raises(RedisError):
+        await _dispatch_alerts(broadcaster, alert, recipients)
+    assert seen == recipients[: failed_index + 1]
+
+
+@pytest.mark.asyncio
+async def test_source_is_not_acknowledged_when_durable_fanout_fails() -> None:
+    redis_client = AsyncMock()
+    redis_client.smembers.return_value = set()
+    redis_client.mget.return_value = [None]
+    payload = AlertMessage(message_id=8, chat_id=-100, raw_text="Ракети на центр").model_dump_json()
+    with (
+        patch("alert_bot_project.worker.main.check_official_air_alarm", return_value=True),
+        patch("alert_bot_project.worker.main._resolve_target_users", return_value=[123]),
+        patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True),
+        patch("alert_bot_project.worker.main._dispatch_alerts", side_effect=RedisError("outage")),
+        pytest.raises(RedisError),
+    ):
+        await process_single_stream_payload("1-0", payload, redis_client, MagicMock(), AsyncMock())
+    redis_client.xack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_source_completes_fanout_with_historical_notice() -> None:
+    redis_client = AsyncMock()
+    redis_client.smembers.return_value = set()
+    redis_client.mget.return_value = [None, None]
+    broadcaster = MagicMock()
+    broadcaster.enqueue_alert = AsyncMock(return_value=True)
+    payload = AlertMessage(
+        message_id=8,
+        chat_id=-100,
+        raw_text="Ракети на центр",
+        timestamp=datetime.now(UTC) - timedelta(minutes=11),
+    ).model_dump_json()
+    with (
+        patch("alert_bot_project.worker.main.check_official_air_alarm", return_value=True),
+        patch("alert_bot_project.worker.main._resolve_target_users", return_value=[123, 456]),
+        patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=False),
+    ):
+        await process_single_stream_payload("1-0", payload, redis_client, broadcaster, AsyncMock())
+    assert broadcaster.enqueue_alert.await_count == 2
+    broadcaster.enqueue_alert.assert_any_await(-100, 8, 123, stale=True)
+    broadcaster.enqueue_alert.assert_any_await(-100, 8, 456, stale=True)
+    redis_client.xack.assert_awaited_once()

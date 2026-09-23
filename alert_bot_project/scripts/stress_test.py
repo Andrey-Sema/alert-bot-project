@@ -88,7 +88,7 @@ async def inject_load(
                 chat_id=group_id,
                 raw_text=random.choice(RAW_TEXT_TEMPLATES),  # noqa: S311 # nosec B311 -- тестовые данные, не криптография
             )
-            pipe.xadd(STREAM_NAME, {"payload": payload.model_dump_json()}, maxlen=10000)
+            pipe.xadd(STREAM_NAME, {"payload": payload.model_dump_json()})
 
         await pipe.execute()
 

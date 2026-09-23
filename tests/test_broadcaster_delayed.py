@@ -1,84 +1,37 @@
-# noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
 import asyncio
 import json
-from datetime import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from alert_bot_project.worker.broadcaster import Broadcaster
+from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, Broadcaster
 
 
-@pytest.fixture
-def mock_bot() -> AsyncMock:
-    return AsyncMock()
+@pytest.mark.asyncio
+async def test_delayed_transfer_uses_both_stream_and_zset() -> None:
+    redis_client = MagicMock()
+    script = AsyncMock(side_effect=[50, asyncio.CancelledError()])
+    redis_client.register_script.return_value = script
+    broadcaster = Broadcaster(AsyncMock(), redis_client)
+    with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(asyncio.CancelledError):
+        await broadcaster.process_delayed_alerts()
+    assert script.call_args.kwargs["keys"] == ["delayed_alerts_queue", "delivery_stream"]
+    assert script.call_args.kwargs["args"][1] == 50
+    assert "ZREMRANGEBYSCORE" not in POP_MATURE_TASKS_LUA
+    assert "ZREM" in POP_MATURE_TASKS_LUA
 
 
-@pytest.fixture
-def mock_redis() -> MagicMock:
-    # ✅ СЕНЬОР-ФИКС: Разделяем синхронные и асинхронные методы Redis для защиты от вечных циклов
-    r = MagicMock()
-    r.register_script = MagicMock()  # Синхронный по контракту библиотеки
-    r.exists = AsyncMock()  # Асинхронные
-    r.zadd = AsyncMock()
-    return r
-
-
-class TestBroadcasterDelayedLogic:
-    @pytest.mark.asyncio
-    async def test_execute_scheduling_stores_correct_unix_intervals(
-        self, mock_bot: AsyncMock, mock_redis: MagicMock
-    ) -> None:
-        broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis)
-
-        with patch("time.time", return_value=1700000000):
-            await broadcaster._execute_scheduling(chat_id=555, disable_notification=False)
-
-            mock_redis.zadd.assert_called_once()
-            called_args = mock_redis.zadd.call_args[1]
-            mapping = called_args[0] if len(called_args) == 1 else mock_redis.zadd.call_args[0][1]
-
-            steps = [json.loads(k)["step"] for k in mapping]
-            assert 2 in steps
-            assert 3 in steps
-
-    @pytest.mark.asyncio
-    async def test_process_single_delayed_task_corrupted_json(self, mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
-        broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis)
-        await broadcaster._process_single_delayed_task("This is totally not a json payload string")
-        mock_redis.exists.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_process_single_delayed_task_skips_if_muted(self, mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
-        broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis)
-        mock_redis.exists.return_value = True
-
-        task_raw = json.dumps({"chat_id": 555, "step": 2, "text": "Повторная тревога", "silent": False})
-
-        with patch.object(broadcaster, "fire_and_forget_message") as mock_fire:
-            await broadcaster._process_single_delayed_task(task_raw)
-            mock_fire.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_process_delayed_alerts_drops_tasks_during_daytime(
-        self, mock_bot: AsyncMock, mock_redis: MagicMock
-    ) -> None:
-        broadcaster = Broadcaster(bot=mock_bot, redis_client=mock_redis)
-
-        # Скрипт — корутина, которая будет вызвана внутри
-        mock_script = AsyncMock()
-        mock_script.side_effect = [["some_task_payload"], asyncio.CancelledError()]
-        mock_redis.register_script.return_value = mock_script
-
-        daytime_mock = time(12, 0, 0)
-
-        with (
-            patch("alert_bot_project.worker.broadcaster.datetime") as mock_dt,
-            patch.object(broadcaster, "_process_single_delayed_task") as mock_process_task,
-        ):
-            mock_dt.now.return_value.time.return_value = daytime_mock
-
-            with pytest.raises(asyncio.CancelledError):
-                await broadcaster.process_delayed_alerts()
-
-            mock_process_task.assert_not_called()
+@pytest.mark.asyncio
+async def test_muted_delayed_job_acknowledged_without_sending() -> None:
+    redis_client = MagicMock()
+    redis_client.exists = AsyncMock(return_value=True)
+    redis_client.get = AsyncMock(return_value="sent")
+    redis_client.xack = AsyncMock()
+    broadcaster = Broadcaster(AsyncMock(), redis_client)
+    with patch.object(broadcaster, "_is_night", return_value=True):
+        await broadcaster._deliver_one(
+            "123-0",
+            {"payload": json.dumps({"event_id": "test", "chat_id": 555, "step": 2, "text": "repeat", "silent": False})},
+        )
+    broadcaster.bot.send_message.assert_not_awaited()
+    redis_client.xack.assert_awaited_once()
