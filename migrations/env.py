@@ -1,6 +1,8 @@
 import asyncio
 import os
+import ssl
 from logging.config import fileConfig
+from urllib.parse import urlsplit
 
 from alembic import context
 from sqlalchemy import pool
@@ -67,10 +69,16 @@ async def run_async_migrations() -> None:
 
     """
 
+    database_url = os.environ["DATABASE_URL"]
+    local_test = os.getenv("MIGRATION_LOCAL_TEST") == "1" and urlsplit(database_url).hostname in (
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    )
     connectable = create_async_engine(
-        os.environ["DATABASE_URL"],
+        database_url,
         poolclass=pool.NullPool,
-        connect_args={} if os.getenv("MIGRATION_LOCAL_TEST") == "1" else {"ssl": "require"},
+        connect_args={} if local_test else {"ssl": ssl.create_default_context()},
     )
 
     async with connectable.connect() as connection:

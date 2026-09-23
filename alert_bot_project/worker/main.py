@@ -37,6 +37,7 @@ from alert_bot_project.core_shared.metrics import (
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
+from alert_bot_project.database.activity import prune_old_activity
 from alert_bot_project.database.crud import get_target_user_ids_page, get_users_by_trigger_and_category
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserTrigger
@@ -204,6 +205,17 @@ async def monitor_dlq_backlog(redis_client: Redis) -> None:
 
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=60.0)
+
+
+async def maintain_activity_retention() -> None:
+    while not shutdown_event.is_set():
+        try:
+            async with AsyncSessionLocal() as session:
+                await prune_old_activity(session)
+        except SQLAlchemyError:
+            logger.exception("Activity retention cleanup failed")
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(shutdown_event.wait(), timeout=86400)
 
 
 async def reconcile_custom_triggers(redis_client: Redis) -> None:
@@ -602,6 +614,7 @@ async def main() -> None:
     recovery_daemon = asyncio.create_task(auto_claim_pending_tasks(redis_client, broadcaster, release_lock_script))
     dlq_daemon = asyncio.create_task(monitor_dlq_backlog(redis_client))
     reconcile_daemon = asyncio.create_task(reconcile_custom_triggers(redis_client))
+    activity_daemon = asyncio.create_task(maintain_activity_retention())
 
     alarm_poller = AlarmStatePoller(redis_client)
     alarm_daemon = asyncio.create_task(alarm_poller.run(shutdown_event))
@@ -625,6 +638,7 @@ async def main() -> None:
     recovery_daemon.cancel()
     dlq_daemon.cancel()
     reconcile_daemon.cancel()
+    activity_daemon.cancel()
     alarm_daemon.cancel()
     for daemon in delivery_daemons:
         daemon.cancel()
@@ -634,6 +648,7 @@ async def main() -> None:
         recovery_daemon,
         dlq_daemon,
         reconcile_daemon,
+        activity_daemon,
         alarm_daemon,
         *delivery_daemons,
         return_exceptions=True,

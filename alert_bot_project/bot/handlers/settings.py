@@ -31,6 +31,7 @@ from alert_bot_project.core_shared.callbacks import (
 )
 from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
 from alert_bot_project.core_shared.text_processor import COMPILED_LOCATIONS, TextProcessor
+from alert_bot_project.database.activity import record_activity
 from alert_bot_project.database.crud import get_or_create_user
 from alert_bot_project.services.user_service import UserService
 
@@ -120,6 +121,7 @@ async def toggle_threat_category(
         categories.append(callback_data.category)
 
     user.potvory = categories
+    await record_activity(db_session, callback.from_user.id)
     await db_session.commit()
 
     await cast(Message, callback.message).edit_reply_markup(reply_markup=build_threat_categories_keyboard(categories))

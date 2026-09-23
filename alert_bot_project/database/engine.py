@@ -1,3 +1,5 @@
+import ssl
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from alert_bot_project.core_shared.config import config
@@ -13,7 +15,7 @@ engine = create_async_engine(
     connect_args={
         "timeout": 5,
         "command_timeout": 10,
-        "ssl": "require",
+        "ssl": ssl.create_default_context(),
         "statement_cache_size": 0,  # Каноничное отключение кэша стейтментов для asyncpg
         "prepared_statement_cache_size": 0,  # Дополнительный оверрайд контроля кэша
     },

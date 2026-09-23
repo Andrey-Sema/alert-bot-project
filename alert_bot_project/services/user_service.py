@@ -14,6 +14,7 @@ from alert_bot_project.core_shared.constants import (
     ODESA_LOCS,
     OUTSIDE_LOCS,
 )
+from alert_bot_project.database.activity import record_activity
 from alert_bot_project.database.crud import (
     add_user_trigger,
     get_or_create_user,
@@ -39,6 +40,7 @@ class UserService:
             await add_user_trigger(self.session, user_id, location_key)
 
         await self.session.refresh(user, attribute_names=["triggers_rel"])
+        await record_activity(self.session, user_id)
         await self.session.commit()
         return user.triggers_set
 
@@ -67,6 +69,7 @@ class UserService:
 
         success = await add_user_trigger(self.session, user_id, trigger_word)
         if success:
+            await record_activity(self.session, user_id)
             await self.session.commit()
             try:
                 await self.redis.sadd("global_custom_triggers", trigger_word)  # type: ignore[misc]
@@ -79,6 +82,7 @@ class UserService:
 
     async def delete_custom_trigger(self, user_id: int, trigger_word: str) -> tuple[bool, str]:
         await remove_user_trigger(self.session, user_id, trigger_word)
+        await record_activity(self.session, user_id)
         await self.session.commit()
 
         user = await get_or_create_user(self.session, user_id)
@@ -105,6 +109,7 @@ class UserService:
         if preset == "clear":
             text_reply = "Звук увімкнено"
             await update_user_mute(self.session, user_id, None)
+            await record_activity(self.session, user_id)
             await self.session.commit()
             try:
                 await self.redis.delete(f"user_mute:{user_id}")
@@ -130,6 +135,7 @@ class UserService:
             raise ValueError(f"Unknown mute preset: {preset}")
 
         await update_user_mute(self.session, user_id, until)
+        await record_activity(self.session, user_id)
         await self.session.commit()
         try:
             await self.redis.set(f"user_mute:{user_id}", "1", ex=max(1, ttl_seconds))
@@ -142,6 +148,7 @@ class UserService:
         until = datetime.now(UTC) + timedelta(minutes=10)
 
         await update_user_mute(self.session, user_id, until)
+        await record_activity(self.session, user_id)
         await self.session.commit()
         try:
             await self.redis.set(f"user_mute:{user_id}", "1", ex=600)

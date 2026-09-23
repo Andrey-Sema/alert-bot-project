@@ -1,8 +1,24 @@
-from pydantic import Field, model_validator
+import os
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    @model_validator(mode="before")
+    @classmethod
+    def load_secret_files(cls, values: dict[str, object]) -> dict[str, object]:
+        for name in ("BOT_TOKEN", "API_HASH", "DATABASE_URL", "REDIS_URL", "UKRAINEALARM_API_KEY"):
+            path = os.getenv(f"{name}_FILE")
+            if path:
+                secret_path = Path(path)
+                if secret_path.stat().st_size > 4096:
+                    raise ValueError(f"{name}_FILE exceeds 4096 bytes")
+                values[name] = secret_path.read_text(encoding="utf-8").strip()
+        return values
+
     # Telegram Bot Settings
     BOT_TOKEN: str = Field(..., description="Official UI bot token obtained from BotFather")
     GROUP_ID: int = Field(..., description="Target channel or group ID to parse threat monitoring data from")
@@ -14,6 +30,16 @@ class Settings(BaseSettings):
     # Infrastructure Settings (Supabase & Redis)
     DATABASE_URL: str = Field(..., description="Connection string for PostgreSQL / Supabase")
     REDIS_URL: str = Field("redis://localhost:6379/0", description="Connection string for Redis instance")
+
+    @field_validator("REDIS_URL")
+    @classmethod
+    def require_tls_for_external_redis(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in ("redis", "rediss") or not parsed.hostname:
+            raise ValueError("REDIS_URL must be a redis:// or rediss:// URL")
+        if parsed.scheme == "redis" and parsed.hostname not in ("localhost", "127.0.0.1", "::1", "redis"):
+            raise ValueError("External Redis requires rediss:// with TLS")
+        return value
 
     # ✅ ФИКС: Добавлены строгие диапазоны портов (ge=1024, le=65535) для предотвращения системных сбоев
     METRICS_PORT_WORKER: int = Field(8000, ge=1024, le=65535, description="Prometheus metrics port for worker service")

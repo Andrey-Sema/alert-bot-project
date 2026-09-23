@@ -26,6 +26,7 @@ from aiogram.types import InlineKeyboardMarkup
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from alert_bot_project.bot.keyboards.builders import build_acknowledge_keyboard
 from alert_bot_project.core_shared.config import config
@@ -43,6 +44,7 @@ from alert_bot_project.core_shared.metrics import (
     DELIVERY_PERMANENT_FAILURES,
     RECIPIENTS_SELECTED,
 )
+from alert_bot_project.database.activity import record_activity
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserSettings
 from alert_bot_project.worker.rate_limit import TelegramRateLimiter
@@ -112,6 +114,14 @@ class Broadcaster:
             muted_until = result.scalar_one_or_none()
             return bool(muted_until is not None and muted_until > datetime.now(UTC))
 
+    async def _record_delivered(self, chat_id: int) -> None:
+        try:
+            async with AsyncSessionLocal() as session:
+                await record_activity(session, chat_id, delivered=True)
+                await session.commit()
+        except SQLAlchemyError:
+            logger.exception("Delivery activity aggregate failed after Telegram send")
+
     async def ensure_delivery_group(self) -> None:
         try:
             await self.redis.xgroup_create(self.delivery_stream_name, self.delivery_group_name, id="0-0", mkstream=True)
@@ -146,12 +156,14 @@ class Broadcaster:
         if locations:
             context.append("Згадана локація: " + html.escape(", ".join(sorted(locations))) + ".")
         first_text += "\n" + "\n".join(context) + "\nПідтвердіть стан в офіційних джерелах."
+        generation = await self.redis.get(f"privacy:generation:{chat_id}") or "0"
         common = {
             "event_id": identity,
             "chat_id": chat_id,
             "source_chat_id": source_chat_id,
             "source_message_id": source_message_id,
             "source_timestamp": source_timestamp.isoformat() if source_timestamp else None,
+            "recipient_generation": generation,
         }
         first = json.dumps({**common, "step": 1, "text": first_text, "silent": stale})
         second = json.dumps({**common, "step": 2, "text": ALERT_SECOND, "silent": False})
@@ -244,6 +256,23 @@ class Broadcaster:
             return
 
         event_id = job.get("event_id")
+        current_generation = await self.redis.get(f"privacy:generation:{chat_id}") or "0"
+        if job.get("recipient_generation", "0") != current_generation:
+            await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+            return
+        if await self.redis.exists(f"privacy:deleted:{chat_id}"):
+            await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+            return
+        source_timestamp = job.get("source_timestamp")
+        if isinstance(source_timestamp, str):
+            try:
+                source_age = (datetime.now(UTC) - datetime.fromisoformat(source_timestamp)).total_seconds()
+                if source_age > 604800:
+                    await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                    return
+            except (TypeError, ValueError):
+                await self._finish_failed_job(message_id, raw_payload, "invalid source timestamp", permanent=True)
+                return
         if step > 1 and not isinstance(event_id, str):
             await self._finish_failed_job(message_id, raw_payload, "missing event identity")
             return
@@ -306,6 +335,7 @@ class Broadcaster:
             pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
             await pipe.execute()
             await self.redis.delete(f"delivery:retry:{message_id}")
+            await self._record_delivered(chat_id)
         else:
             DELIVERY_OUTCOMES.labels(stage=str(step), outcome=outcome.status).inc()
             if outcome.status == "blocked":

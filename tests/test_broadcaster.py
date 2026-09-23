@@ -80,9 +80,12 @@ async def test_failed_send_remains_pending(mock_bot: AsyncMock, mock_redis: Magi
 @pytest.mark.asyncio
 async def test_success_acknowledges_only_after_send(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
     broadcaster = Broadcaster(mock_bot, mock_redis)
-    with patch.object(
-        broadcaster, "send_single_message", new_callable=AsyncMock, return_value=DeliveryOutcome("sent")
-    ) as send:
+    with (
+        patch.object(
+            broadcaster, "send_single_message", new_callable=AsyncMock, return_value=DeliveryOutcome("sent")
+        ) as send,
+        patch.object(broadcaster, "_record_delivered", new_callable=AsyncMock),
+    ):
         await broadcaster._deliver_one("123-0", {"payload": json.dumps({"chat_id": 777, "step": 1, "text": "a"})})
     send.assert_awaited_once()
     mock_redis.pipeline.return_value.xack.assert_called_once_with("delivery_stream", "delivery_workers", "123-0")
@@ -112,7 +115,7 @@ async def test_second_stage_waits_for_first(mock_bot: AsyncMock, mock_redis: Mag
 @pytest.mark.asyncio
 async def test_clear_after_source_cancels_delayed_stage(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
     broadcaster = Broadcaster(mock_bot, mock_redis)
-    mock_redis.get.return_value = "43"
+    mock_redis.get.side_effect = lambda key: "43" if key == "threat:clear_id:-100" else None
     payload = json.dumps(
         {
             "event_id": "-100:42:777",
@@ -124,7 +127,19 @@ async def test_clear_after_source_cancels_delayed_stage(mock_bot: AsyncMock, moc
         }
     )
     await broadcaster._deliver_one("123-0", {"payload": payload})
-    mock_redis.get.assert_awaited_once_with("threat:clear_id:-100")
+    mock_redis.get.assert_any_await("threat:clear_id:-100")
+    mock_bot.send_message.assert_not_awaited()
+    mock_redis.xack.assert_awaited_once_with("delivery_stream", "delivery_workers", "123-0")
+
+
+@pytest.mark.asyncio
+async def test_deleted_generation_suppresses_old_first_stage(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    mock_redis.get.return_value = "new-generation"
+    payload = json.dumps(
+        {"event_id": "-100:42:777", "chat_id": 777, "step": 1, "text": "old", "recipient_generation": "old-generation"}
+    )
+    await broadcaster._deliver_one("123-0", {"payload": payload})
     mock_bot.send_message.assert_not_awaited()
     mock_redis.xack.assert_awaited_once_with("delivery_stream", "delivery_workers", "123-0")
 
