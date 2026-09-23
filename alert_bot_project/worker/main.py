@@ -6,6 +6,7 @@ import os
 import random
 import signal
 import socket
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -24,7 +25,9 @@ from alert_bot_project.core_shared.constants import KYIV_TZ
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import (
     ALERTS_PROCESSED,
+    DELAYED_BACKLOG,
     DELIVERY_BACKLOG,
+    DELIVERY_OLDEST_AGE,
     DLQ_SIZE,
     EXPIRED_ALERTS,
     PROCESSING_TIME,
@@ -72,6 +75,13 @@ AUDIT_EXPIRED_LUA = """
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 redis.call('XADD', KEYS[2], '*', 'source_id', ARGV[1], 'payload', ARGV[2], 'reason', 'older_than_600s')
 redis.call('SET', KEYS[1], '1', 'EX', 604800)
+return 1
+"""
+
+RECORD_CLEAR_LUA = """
+local prior = tonumber(redis.call('GET', KEYS[1]) or '0')
+local incoming = tonumber(ARGV[1])
+if incoming > prior then redis.call('SET', KEYS[1], incoming, 'EX', 604800) end
 return 1
 """
 
@@ -184,6 +194,9 @@ async def monitor_dlq_backlog(redis_client: Redis) -> None:
             await trim_acknowledged_stream(redis_client, Broadcaster.delivery_stream_name)
             SOURCE_BACKLOG.set(await redis_client.xlen(STREAM_NAME))
             DELIVERY_BACKLOG.set(await redis_client.xlen(Broadcaster.delivery_stream_name))
+            DELAYED_BACKLOG.set(await redis_client.zcard("delayed_alerts_queue"))
+            oldest = await redis_client.xrange(Broadcaster.delivery_stream_name, count=1)
+            DELIVERY_OLDEST_AGE.set(max(0, time.time() - int(oldest[0][0].split("-")[0]) / 1000) if oldest else 0)
         except asyncio.CancelledError:
             raise
         except RedisError:
@@ -353,11 +366,25 @@ def _resolve_trigger_words(
 
 
 async def _dispatch_alerts(
-    broadcaster: Broadcaster, alert_data: AlertMessage, active_users: list[int], *, stale: bool = False
+    broadcaster: Broadcaster,
+    alert_data: AlertMessage,
+    active_users: list[int],
+    *,
+    stale: bool = False,
+    categories: set[str] | None = None,
+    locations: set[str] | None = None,
 ) -> None:
     """Persist each recipient before acknowledging the source stream entry."""
     for u_id in active_users:
-        await broadcaster.enqueue_alert(alert_data.chat_id, alert_data.message_id, u_id, stale=stale)
+        await broadcaster.enqueue_alert(
+            alert_data.chat_id,
+            alert_data.message_id,
+            u_id,
+            stale=stale,
+            source_timestamp=alert_data.timestamp,
+            categories=categories,
+            locations=locations,
+        )
 
 
 async def process_single_stream_payload(
@@ -378,6 +405,16 @@ async def process_single_stream_payload(
         ):
             EXPIRED_ALERTS.inc()
             logger.warning("Recovered expired source alert %s as historical notice", redis_msg_id)
+
+    status = TextProcessor.classify_status(alert_data.raw_text)
+    if status == "clear":
+        clear_script = redis_client.register_script(RECORD_CLEAR_LUA)
+        await clear_script(keys=[f"threat:clear_id:{alert_data.chat_id}"], args=[alert_data.message_id])
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        return
+    if status == "negated":
+        await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+        return
 
     with PROCESSING_TIME.time():
         analysis = TextProcessor.parse_message(alert_data.raw_text)
@@ -410,7 +447,14 @@ async def process_single_stream_payload(
                     )
                 if not page:
                     break
-                await _dispatch_alerts(broadcaster, alert_data, page, stale=stale)
+                await _dispatch_alerts(
+                    broadcaster,
+                    alert_data,
+                    page,
+                    stale=stale,
+                    categories=analysis["categories"],
+                    locations=analysis["locations"],
+                )
                 after_user_id = page[-1]
                 if len(page) < 500:
                     break

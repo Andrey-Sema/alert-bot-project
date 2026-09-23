@@ -62,3 +62,30 @@ groups:
         annotations:
           summary: "⚠️ Росте черга DLQ (Застряглі повідомлення)"
           description: "У мертвій черзі dead_letter_queue накопичилось {{ $value }} битих пайлоадів. Потрібен ручний розбір логів."
+
+      - alert: DelayedDeliveryBacklog
+        expr: worker_delayed_queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Черга відкладених сповіщень зростає"
+          description: "Відкладених завдань більше 1000 понад п'ять хвилин. Перевірте Telegram та воркер."
+
+      - alert: DeliveryOldestJobStale
+        expr: worker_delivery_oldest_age_seconds > 600
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Завдання доставки старіше 10 хвилин"
+          description: "Перевірте PEL, Telegram rate limit і DLQ."
+
+      - alert: TelegramDeliveryRetrySpike
+        expr: sum(increase(worker_delivery_outcomes_total{outcome="retry"}[5m])) > 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Багато повторних спроб Telegram"
+          description: "За п'ять хвилин більше 20 спроб доставки потребували повтору."

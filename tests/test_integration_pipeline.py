@@ -76,7 +76,12 @@ class TestE2EAlertPipeline:
             # 5. Проверяем выполнение бизнес-контрактов системы
             mock_redis.xack.assert_called_once_with("alerts_stream", "workers_group", "1690000000-0")
 
-            mock_broadcaster.enqueue_alert.assert_awaited_once_with(-100123456, 999, 4444, stale=False)
+            call = mock_broadcaster.enqueue_alert.await_args
+            assert call.args == (-100123456, 999, 4444)
+            assert call.kwargs["stale"] is False
+            assert call.kwargs["source_timestamp"] == payload.timestamp
+            assert {"Мопеди", "Ракети"} <= call.kwargs["categories"]
+            assert {"peresyp", "center"} <= call.kwargs["locations"]
 
 
 @pytest.mark.asyncio
@@ -92,7 +97,7 @@ async def test_partial_fanout_stops_without_forgetting_prior_recipients(
     broadcaster = MagicMock()
     seen: list[int] = []
 
-    async def enqueue(_chat: int, _message: int, recipient: int, *, stale: bool = False) -> bool:
+    async def enqueue(_chat: int, _message: int, recipient: int, **_kwargs: object) -> bool:
         seen.append(recipient)
         if len(seen) == failed_index + 1:
             raise RedisError("temporary outage")
@@ -143,8 +148,8 @@ async def test_stale_pending_source_completes_fanout_with_historical_notice() ->
     ):
         await process_single_stream_payload("1-0", payload, redis_client, broadcaster, AsyncMock())
     assert broadcaster.enqueue_alert.await_count == 2
-    broadcaster.enqueue_alert.assert_any_await(-100, 8, 123, stale=True)
-    broadcaster.enqueue_alert.assert_any_await(-100, 8, 456, stale=True)
+    assert {call.args[2] for call in broadcaster.enqueue_alert.await_args_list} == {123, 456}
+    assert all(call.kwargs["stale"] is True for call in broadcaster.enqueue_alert.await_args_list)
     redis_client.xack.assert_awaited_once()
 
 

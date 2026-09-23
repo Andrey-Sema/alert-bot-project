@@ -5,6 +5,13 @@ from typing import Any
 from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
 
 CLEAN_PATTERN = re.compile(r"[^\w\s-]")
+CLEAR_PATTERN = re.compile(r"\b(?:відбій|отбой|тривогу скасовано|тревога отменена)\b", re.IGNORECASE)
+NEGATION_PATTERN = re.compile(
+    r"\b(?:не\s+(?:виявлено|зафіксовано|підтверджено|обнаружено|зафиксировано)|"
+    r"нет\s+(?:угрозы|ракет|бпла)|загрози\s+немає)\b",
+    re.IGNORECASE,
+)
+CLAUSE_SPLIT_PATTERN = re.compile(r"[,.;!?\n]+|\b(?:але|однак|но)\b", re.IGNORECASE)
 
 
 def _compile_word_boundary_pattern(keywords: Iterable[str]) -> re.Pattern[str]:
@@ -23,6 +30,34 @@ COMPILED_LOCATIONS = {
 
 
 class TextProcessor:
+    @classmethod
+    def classify_status(cls, raw_text: str) -> str:
+        """Classify explicit clear/negated statements conservatively."""
+        saw_clear = False
+        saw_negation = False
+        saw_active = False
+        for raw_clause in CLAUSE_SPLIT_PATTERN.split(raw_text):
+            clause = cls.normalize(raw_clause)
+            if not clause:
+                continue
+            if CLEAR_PATTERN.search(clause):
+                saw_clear = True
+                continue
+            if NEGATION_PATTERN.search(clause):
+                saw_negation = True
+                continue
+            if any(pattern.search(clause) for pattern in COMPILED_CATEGORIES.values()):
+                saw_active = True
+        if saw_clear:
+            if saw_active and re.search(r"\b(?:але|однак|но)\b", raw_text, re.IGNORECASE):
+                return "active"
+            return "clear"
+        if saw_active:
+            return "active"
+        if saw_negation:
+            return "negated"
+        return "unknown"
+
     @staticmethod
     def normalize(text: str) -> str:
         """Очищає текст від спецсимволів, зводить до нижнього регістру та прибирає зайві пробіли."""

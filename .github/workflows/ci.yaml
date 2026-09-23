@@ -4,7 +4,6 @@ on:
   push:
     branches: [ main, master ]
   pull_request:
-    branches: [ main, master ]
 
 permissions:
   contents: read
@@ -21,6 +20,17 @@ jobs:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -61,5 +71,6 @@ jobs:
         API_ID: "123456"
         API_HASH: "fake_hash"
         DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
+        MIGRATION_LOCAL_TEST: "1"
         REDIS_URL: "redis://localhost:6379/0"
       run: pytest

@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ✅ СЕНЬОР-ФИКС: Выносим создание групп, юзера, папок и пермиссий в отдельный изолированный слой
 RUN groupadd -g 10001 appgroup \
     && useradd -u 10001 -g appgroup -M -s /sbin/nologin appuser \
-    && mkdir -p /data/session /data/logs \
+    && mkdir -p /data/session /data/logs /data/outbox \
     && chown -R appuser:appgroup /data /app
 
 # Копируем чистое окружение из builder прямо в системные пути python
@@ -48,6 +48,8 @@ COPY --from=builder --chown=appuser:appgroup /install /usr/local
 
 # Переносим исходный код приложения (лежит в самом низу, чтобы не инвалидировать кэш либ)
 COPY --chown=appuser:appgroup alert_bot_project/ /app/alert_bot_project/
+COPY --chown=appuser:appgroup migrations/ /app/migrations/
+COPY --chown=appuser:appgroup alembic.ini /app/alembic.ini
 
 USER appuser
 

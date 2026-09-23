@@ -15,6 +15,8 @@ from alert_bot_project.core_shared.metrics import (
     SCRAPER_ERRORS,
     SCRAPER_MESSAGES,
     SCRAPER_OUTBOX_DEPTH,
+    SOURCE_PERSISTED,
+    SOURCE_PUBLISHED,
     start_metrics_server,
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
@@ -61,11 +63,13 @@ async def handle_channel_post(client: Client, message: Message) -> None:
 
     # A confirmed local SQLite commit precedes every Redis publish attempt.
     await outbox.put(message.chat.id, message.id, json_payload)
+    SOURCE_PERSISTED.inc()
     max_retries = 3
     for attempt in range(max_retries):
         try:
             # Публикуем уже готовый спарсенный JSON-пайлоад
             await publisher.publish_message(json_payload, message.chat.id, message.id)
+            SOURCE_PUBLISHED.inc()
             await outbox.delete(message.chat.id, message.id)
             break
         except Exception as exc:
@@ -91,6 +95,7 @@ async def replay_outbox() -> None:
             SCRAPER_OUTBOX_DEPTH.set(await outbox.count())
             for chat_id, message_id, payload in pending:
                 await publisher.publish_message(payload, chat_id, message_id)
+                SOURCE_PUBLISHED.inc()
                 await outbox.delete(chat_id, message_id)
             await asyncio.sleep(0.1 if len(pending) == 100 else 5)
         except asyncio.CancelledError:
