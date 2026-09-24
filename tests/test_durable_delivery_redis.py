@@ -1,5 +1,6 @@
 """Real Redis checks run in CI; local runs skip when Redis is unavailable."""
 
+import asyncio
 import json
 import os
 import time
@@ -15,6 +16,7 @@ from redis.exceptions import RedisError
 
 from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache, update_custom_trigger_cache
 from alert_bot_project.scraper.publisher import PUBLISH_ONCE_LUA, SOURCE_REPLAY_HORIZON_SECONDS, RedisPublisher
+from alert_bot_project.scripts.capacity_probe import probe_fanout
 from alert_bot_project.services.privacy import (
     BEGIN_DELIVERY_LUA,
     END_DELIVERY_LUA,
@@ -370,4 +372,35 @@ async def test_trigger_cache_version_changes_only_with_membership(phrases: set[s
         assert await reconcile_custom_trigger_cache(client, phrases, version) == -1
     finally:
         await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("posts_per_minute", [1, 5, 20])
+async def test_synthetic_fanout_accepts_all_jobs(posts_per_minute: int) -> None:
+    client = await _redis()
+    try:
+        result = await probe_fanout(client, recipients=125, posts_per_minute=posts_per_minute)
+        assert result["accepted_loss"] == 0
+        assert result["first_stage_jobs"] == 125 * posts_per_minute
+        assert result["delayed_jobs"] == 250 * posts_per_minute
+        assert result["fanout_p99_seconds"] >= result["fanout_p95_seconds"]
+        assert result["fanout_p99_seconds"] < 5
+        assert result["redis_memory_delta_bytes"] < 64 * 1024 * 1024
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repeat_throttle_does_not_reserve_slot_needed_by_first_alert() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    global_key, first_chat, repeat_chat, repeat_key = [f"probe:rate:{suffix}:{part}" for part in range(4)]
+    try:
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, global_key, repeat_chat, repeat_key, 1) == 0
+        await asyncio.sleep(0.08)
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, global_key, repeat_chat, repeat_key, 1) > 0
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, global_key, first_chat, repeat_key, 0) == 0
+    finally:
+        await client.delete(global_key, first_chat, repeat_chat, repeat_key)
         await client.aclose()
