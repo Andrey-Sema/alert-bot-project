@@ -37,6 +37,7 @@ from alert_bot_project.core_shared.constants import (
     ALERT_SECOND,
     ALERT_THIRD,
     KYIV_TZ,
+    SOURCE_REPLAY_HORIZON_SECONDS,
 )
 from alert_bot_project.core_shared.metrics import (
     DELIVERY_LATENCY,
@@ -54,7 +55,7 @@ logger = logging.getLogger("worker.broadcaster")
 
 # The marker, first delivery job and both delayed jobs are one Redis operation.
 # Replaying a partially-fanned-out source post cannot duplicate recipients.
-ENQUEUE_ALERT_LUA = """
+ENQUEUE_ALERT_LUA = f"""
 if redis.call('EXISTS', KEYS[4]) == 1 then return 0 end
 if (redis.call('GET', KEYS[5]) or '0') ~= ARGV[7] then return 0 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
@@ -62,7 +63,7 @@ if redis.call('EXISTS', KEYS[1]) == 0 then
     if ARGV[6] == '0' then
         redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3], ARGV[4], ARGV[5])
     end
-    redis.call('SET', KEYS[1], '1', 'EX', 604800)
+    redis.call('SET', KEYS[1], '1', 'EX', {SOURCE_REPLAY_HORIZON_SECONDS})
     return 1
 end
 return 0

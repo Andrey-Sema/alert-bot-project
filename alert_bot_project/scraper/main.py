@@ -113,6 +113,18 @@ async def replay_outbox() -> None:
             await asyncio.sleep(5)
 
 
+async def expire_legacy_source_markers() -> None:
+    while not shutdown_event.is_set():
+        try:
+            await publisher.expire_legacy_markers()
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Source marker retention migration failed; retrying")
+            await asyncio.sleep(60)
+
+
 async def stop_services() -> None:
     logger.info("Initiating graceful teardown protocol stack...")
     try:
@@ -144,11 +156,13 @@ async def main() -> None:
     logger.info("Starting Pyrogram client infrastructure tracking layer...")
     await app.start()
     replay_task = asyncio.create_task(replay_outbox())
+    marker_cleanup_task = asyncio.create_task(expire_legacy_source_markers())
     logger.info("Scraper background subsystem engine online.")
 
     await shutdown_event.wait()
     replay_task.cancel()
-    await asyncio.gather(replay_task, return_exceptions=True)
+    marker_cleanup_task.cancel()
+    await asyncio.gather(replay_task, marker_cleanup_task, return_exceptions=True)
     logger.info("Subsystem execution terminated.")
 
 
