@@ -1,5 +1,6 @@
 """Real Redis checks run in CI; local runs skip when Redis is unavailable."""
 
+import json
 import os
 import time
 import uuid
@@ -10,9 +11,17 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
 
 from alert_bot_project.scraper.publisher import PUBLISH_ONCE_LUA
-from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, Broadcaster
+from alert_bot_project.services.privacy import (
+    BEGIN_DELIVERY_LUA,
+    END_DELIVERY_LUA,
+    FENCE_DELETION_LUA,
+    delete_user_data,
+    user_privacy_lock,
+)
+from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, STORE_DLQ_LUA, Broadcaster
 from alert_bot_project.worker.main import init_redis_consumer_group
 from alert_bot_project.worker.rate_limit import ACQUIRE_SLOT_LUA
 from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
@@ -165,4 +174,126 @@ async def test_shared_rate_slot_limits_global_and_per_chat() -> None:
         assert await client.eval(ACQUIRE_SLOT_LUA, 3, *keys, 0) > 0
     finally:
         await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_privacy_fence_blocks_new_fanout_and_delayed_transfer() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    recipient = 1_000_000_000_000_000 + int(suffix[:8], 16)
+    broadcaster = Broadcaster(AsyncMock(), client)
+    broadcaster.delivery_stream_name = f"test:delivery:{suffix}"
+    broadcaster.delayed_queue_key = f"test:delayed:{suffix}"
+    deleted_key = f"privacy:deleted:{recipient}"
+    generation_key = f"privacy:generation:{recipient}"
+    marker = f"delivery:enqueued:-100:42:{recipient}"
+    try:
+        assert await broadcaster.enqueue_alert(-100, 42, recipient)
+        await client.eval(FENCE_DELETION_LUA, 2, deleted_key, generation_key, "new-generation")
+        assert await client.ttl(deleted_key) == -1
+        assert await client.ttl(generation_key) == -1
+        assert not await broadcaster.enqueue_alert(-100, 43, recipient)
+        assert (
+            await client.eval(
+                POP_MATURE_TASKS_LUA,
+                2,
+                broadcaster.delayed_queue_key,
+                broadcaster.delivery_stream_name,
+                int(time.time()) + 10000,
+                50,
+            )
+            == 2
+        )
+        assert await client.xlen(broadcaster.delivery_stream_name) == 1
+        assert await client.zcard(broadcaster.delayed_queue_key) == 0
+    finally:
+        await client.delete(
+            deleted_key, generation_key, marker, broadcaster.delivery_stream_name, broadcaster.delayed_queue_key
+        )
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deletion_scrubs_only_own_dlq_payload_and_rejects_late_failure() -> None:
+    client = await _redis()
+    user_id = 1_000_000_007_744_332
+    other_id = user_id + 1
+    try:
+        await client.delete(
+            "delivery_stream",
+            "delivery_dead_letter_queue",
+            f"privacy:deleted:{user_id}",
+            f"privacy:generation:{user_id}",
+        )
+        await client.xgroup_create("delivery_stream", "delivery_workers", id="0-0", mkstream=True)
+        await client.xadd(
+            "delivery_dead_letter_queue", {"payload": json.dumps({"chat_id": user_id, "text": "private"})}
+        )
+        await client.xadd("delivery_dead_letter_queue", {"payload": json.dumps({"chat_id": other_id, "text": "keep"})})
+        await delete_user_data(AsyncMock(), client, user_id)
+        remaining = await client.xrange("delivery_dead_letter_queue")
+        assert len(remaining) == 1
+        assert json.loads(remaining[0][1]["payload"])["chat_id"] == other_id
+
+        job = json.dumps({"chat_id": user_id, "recipient_generation": "0", "event_id": "event", "step": 1})
+        message_id = await client.xadd("delivery_stream", {"payload": job})
+        await client.xreadgroup("delivery_workers", "test-worker", {"delivery_stream": ">"}, count=1)
+        await client.eval(
+            STORE_DLQ_LUA,
+            3,
+            "delivery_dead_letter_queue",
+            "delivery_stream",
+            f"delivery:retry:{message_id}",
+            job,
+            "telegram_forbidden",
+            message_id,
+            "delivery_workers",
+            "",
+        )
+        assert await client.xlen("delivery_dead_letter_queue") == 1
+    finally:
+        await client.delete(
+            "delivery_stream",
+            "delivery_dead_letter_queue",
+            f"privacy:deleted:{user_id}",
+            f"privacy:generation:{user_id}",
+            f"privacy:inflight:{user_id}",
+        )
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deletion_fence_waits_for_reserved_delivery() -> None:
+    client = await _redis()
+    user_id = 7744332200
+    deleted_key = f"privacy:deleted:{user_id}"
+    generation_key = f"privacy:generation:{user_id}"
+    inflight_key = f"privacy:inflight:{user_id}"
+    try:
+        await client.delete(deleted_key, generation_key, inflight_key)
+        assert await client.eval(BEGIN_DELIVERY_LUA, 3, deleted_key, generation_key, inflight_key, "0") == 1
+        await client.eval(FENCE_DELETION_LUA, 2, deleted_key, generation_key, "new-generation")
+        assert await client.eval(BEGIN_DELIVERY_LUA, 3, deleted_key, generation_key, inflight_key, "0") == 0
+        assert await client.get(inflight_key) == "1"
+        await client.eval(END_DELIVERY_LUA, 1, inflight_key)
+        assert await client.get(inflight_key) is None
+    finally:
+        await client.delete(deleted_key, generation_key, inflight_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_registration_cannot_overlap_deletion_lock() -> None:
+    client = await _redis()
+    user_id = 1_000_000_007_744_333
+    key = f"privacy:operation:{user_id}"
+    try:
+        async with user_privacy_lock(client, user_id):
+            with pytest.raises(RedisError):
+                async with user_privacy_lock(client, user_id):
+                    pass
+        assert await client.exists(key) == 0
+    finally:
+        await client.delete(key)
         await client.aclose()

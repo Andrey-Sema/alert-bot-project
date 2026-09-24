@@ -14,7 +14,7 @@ from alert_bot_project.bot.keyboards.messages import INFO_TEXT, WELCOME_TEXT
 from alert_bot_project.bot.loader import redis_client
 from alert_bot_project.database.activity import record_activity
 from alert_bot_project.database.crud import get_or_create_user
-from alert_bot_project.services.privacy import delete_user_data
+from alert_bot_project.services.privacy import delete_user_data, user_privacy_lock
 
 logger = logging.getLogger("bot.handlers.start")
 router = Router(name="start_router")
@@ -26,10 +26,11 @@ async def process_start_command(message: Message, db_session: AsyncSession) -> N
     user_id = message.from_user.id
 
     try:
-        await get_or_create_user(db_session, user_id)
-        await record_activity(db_session, user_id)
-        await db_session.commit()
-        await redis_client.delete(f"privacy:deleted:{user_id}")
+        async with user_privacy_lock(redis_client, user_id):
+            await get_or_create_user(db_session, user_id)
+            await record_activity(db_session, user_id)
+            await db_session.commit()
+            await redis_client.delete(f"privacy:deleted:{user_id}")
         logger.info("User ID %d successfully initiated /start command session.", user_id)
     except (SQLAlchemyError, RedisError):
         # ✅ СЕНЬОР-ФИКС: Избыточный перехват OperationalError убран, так как он наследуется от SQLAlchemyError.

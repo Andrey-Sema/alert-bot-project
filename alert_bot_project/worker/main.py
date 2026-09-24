@@ -418,19 +418,23 @@ async def process_single_stream_payload(
             EXPIRED_ALERTS.inc()
             logger.warning("Recovered expired source alert %s as historical notice", redis_msg_id)
 
-    status = TextProcessor.classify_status(alert_data.raw_text)
-    if status == "clear":
+    signal = TextProcessor.analyze_signal(alert_data.raw_text)
+    if signal.global_clear or signal.clear_locations:
         clear_script = redis_client.register_script(RECORD_CLEAR_LUA)
-        await clear_script(keys=[f"threat:clear_id:{alert_data.chat_id}"], args=[alert_data.message_id])
+        if signal.global_clear:
+            await clear_script(keys=[f"threat:clear_id:{alert_data.chat_id}"], args=[alert_data.message_id])
+        for location in signal.clear_locations:
+            await clear_script(keys=[f"threat:clear_id:{alert_data.chat_id}:{location}"], args=[alert_data.message_id])
+    if signal.status == "clear":
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return
-    if status == "negated":
+    if signal.status == "negated":
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return
 
     with PROCESSING_TIME.time():
-        analysis = TextProcessor.parse_message(alert_data.raw_text)
-        normalized_text = TextProcessor.normalize(alert_data.raw_text)
+        analysis = TextProcessor.parse_message(signal.positive_text)
+        normalized_text = TextProcessor.normalize(signal.positive_text)
 
         matched_custom = await trigger_matcher.get_matches(normalized_text, redis_client)
         official_alarm_active = await check_official_air_alarm(redis_client)
