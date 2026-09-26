@@ -7,8 +7,9 @@ import random
 import secrets
 import signal
 import socket
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -37,6 +38,7 @@ from alert_bot_project.core_shared.metrics import (
 )
 from alert_bot_project.core_shared.redis_connection import create_service_redis, verify_redis_identity
 from alert_bot_project.core_shared.schemas import AlertMessage
+from alert_bot_project.core_shared.supervision import supervise
 from alert_bot_project.core_shared.text_processor import TextProcessor
 from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache
 from alert_bot_project.database.activity import prune_old_activity
@@ -615,71 +617,57 @@ async def main() -> None:
     redis_client = create_service_redis()
     try:
         await verify_redis_identity(redis_client, "worker")
+        release_lock_script: ReleaseLockScript = redis_client.register_script(RELEASE_LOCK_LUA)
+        await init_redis_consumer_group(redis_client)
+        await cleanup_dead_consumers(redis_client)
+        await sync_global_custom_triggers(redis_client)
+        broadcaster = Broadcaster(bot, redis_client)
+        await broadcaster.ensure_delivery_group()
+
+        async def consume_source() -> None:
+            await _drain_pending_backlog(redis_client, broadcaster, release_lock_script)
+            await _consume_loop(redis_client, broadcaster, release_lock_script)
+
+        async def deliver(index: int) -> None:
+            await broadcaster.process_delivery_stream(index)
+
+        def _signal_handler(*_args: object) -> None:
+            logger.info("Shutdown signal received.")
+            shutdown_event.set()
+
+        try:
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            pass
+
+        loops: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {
+            "source-consumer": consume_source,
+            "delayed-delivery": broadcaster.process_delayed_alerts,
+            "source-recovery": partial(auto_claim_pending_tasks, redis_client, broadcaster, release_lock_script),
+            "queue-metrics": partial(monitor_dlq_backlog, redis_client),
+            "trigger-reconciliation": partial(reconcile_custom_triggers, redis_client),
+            "activity-retention": maintain_activity_retention,
+            **{f"delivery-{index}": partial(deliver, index) for index in range(broadcaster.workers_count)},
+        }
+        alarm_poller = AlarmStatePoller(redis_client)
+        if alarm_poller.client is None:
+            # Disabled integration is an intentional one-shot, not a dead loop.
+            await alarm_poller.run(shutdown_event)
+        else:
+            loops["official-alarm"] = partial(alarm_poller.run, shutdown_event)
+        await supervise(loops, shutdown_event)
     except Exception:
-        await redis_client.aclose()
-        await bot.session.close()
+        logger.exception("Worker stopped after initialization or critical loop failure")
         raise
-
-    release_lock_script: ReleaseLockScript = redis_client.register_script(RELEASE_LOCK_LUA)
-
-    await init_redis_consumer_group(redis_client)
-    await cleanup_dead_consumers(redis_client)
-    await sync_global_custom_triggers(redis_client)
-
-    broadcaster = Broadcaster(bot, redis_client)
-    await broadcaster.ensure_delivery_group()
-    delivery_daemons = [
-        asyncio.create_task(broadcaster.process_delivery_stream(i)) for i in range(broadcaster.workers_count)
-    ]
-
-    delayed_daemon = asyncio.create_task(broadcaster.process_delayed_alerts())
-    recovery_daemon = asyncio.create_task(auto_claim_pending_tasks(redis_client, broadcaster, release_lock_script))
-    dlq_daemon = asyncio.create_task(monitor_dlq_backlog(redis_client))
-    reconcile_daemon = asyncio.create_task(reconcile_custom_triggers(redis_client))
-    activity_daemon = asyncio.create_task(maintain_activity_retention())
-
-    alarm_poller = AlarmStatePoller(redis_client)
-    alarm_daemon = asyncio.create_task(alarm_poller.run(shutdown_event))
-
-    def _signal_handler(*_args: object) -> None:
-        logger.info("Shutdown signal received.")
+    finally:
         shutdown_event.set()
-
-    try:
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _signal_handler)
-    except NotImplementedError:
-        pass
-
-    await _drain_pending_backlog(redis_client, broadcaster, release_lock_script)
-    await _consume_loop(redis_client, broadcaster, release_lock_script)
-
-    logger.info("Draining background tasks...")
-    delayed_daemon.cancel()
-    recovery_daemon.cancel()
-    dlq_daemon.cancel()
-    reconcile_daemon.cancel()
-    activity_daemon.cancel()
-    alarm_daemon.cancel()
-    for daemon in delivery_daemons:
-        daemon.cancel()
-
-    await asyncio.gather(
-        delayed_daemon,
-        recovery_daemon,
-        dlq_daemon,
-        reconcile_daemon,
-        activity_daemon,
-        alarm_daemon,
-        *delivery_daemons,
-        return_exceptions=True,
-    )
-
-    # Keep pending entries owned by this consumer on shutdown. XAUTOCLAIM
-    # reassigns them after a restart; DELCONSUMER would orphan their payloads.
-    await redis_client.close()
-    await bot.session.close()
+        # Preserve pending entries for XAUTOCLAIM; do not DELCONSUMER.
+        try:
+            await redis_client.aclose()
+        finally:
+            await bot.session.close()
 
 
 if __name__ == "__main__":
