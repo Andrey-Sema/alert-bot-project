@@ -63,6 +63,38 @@ jobs:
     - name: Run Bandit Security Vulnerability Audit
       run: bandit -c pyproject.toml -r alert_bot_project/
 
+    - name: Start disposable Redis ACL and limited exporter fixtures
+      run: |
+        python - <<'PY'
+        import os, secrets
+        from pathlib import Path
+        from alert_bot_project.core_shared.redis_acl import USERS
+        from alert_bot_project.scripts.build_redis_acl import compile_credentials
+        directory = Path(os.environ['RUNNER_TEMP']) / 'redis-acl'
+        directory.mkdir(mode=0o700)
+        for role in USERS:
+            path = directory / f'redis_{role}_password'
+            path.write_text(secrets.token_hex(32))
+            path.chmod(0o600)
+        compile_credentials(directory, directory / 'users.acl', directory / 'exporter.json')
+        for name in ('users.acl', 'exporter.json'):
+            (directory / name).chmod(0o444)
+        PY
+        docker network create alert-bot-acl-ci
+        docker run -d --name alert-bot-acl-test --network alert-bot-acl-ci --network-alias redis \
+          -p 127.0.0.1:6380:6379 \
+          -v "$RUNNER_TEMP/redis-acl/users.acl:/run/secrets/users.acl:ro" \
+          redis:7.2-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0 \
+          redis-server --aclfile /run/secrets/users.acl --appendonly no --save ""
+        docker run -d --name alert-bot-acl-exporter --network alert-bot-acl-ci \
+          -p 127.0.0.1:9122:9121 \
+          -v "$RUNNER_TEMP/redis-acl/exporter.json:/run/secrets/redis_exporter_credentials:ro" \
+          -e REDIS_ADDR=redis://redis:6379 -e REDIS_USER=alert_monitor \
+          -e REDIS_PASSWORD_FILE=/run/secrets/redis_exporter_credentials \
+          -e REDIS_EXPORTER_CONFIG_COMMAND=- -e REDIS_EXPORTER_EXPORT_CLIENT_LIST=false \
+          -e REDIS_EXPORTER_DISABLE_EXPORTING_KEY_VALUES=true \
+          oliver006/redis_exporter@sha256:ca3abd5f19da6c87e96038ba08aaa3dfaab34dc649834584c4d6880b05952fef
+
     - name: Run Complete Pytest Suite Engine (Units & Integration)
       env:
         # Подсовываем фейковые переменные для прохождения тестов конфигурации Pydantic
@@ -75,6 +107,7 @@ jobs:
         MIGRATION_DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
         MIGRATION_LOCAL_TEST: "1"
         REDIS_URL: "redis://localhost:6379/0"
+        ACL_TEST_SECRET_DIR: ${{ runner.temp }}/redis-acl
       run: pytest
 
     - name: Validate complete ASVS 5.0.0 evidence registry
@@ -90,7 +123,6 @@ jobs:
 
     - name: Validate rendered Compose service credential boundaries
       env:
-        REDIS_PASSWORD: ci_only_not_a_real_secret
         GRAFANA_PASSWORD: ci_only_not_a_real_secret
       run: |
         for service in worker bot_ui scraper migrator; do
@@ -118,3 +150,9 @@ jobs:
       with:
         name: python-sbom
         path: sbom.json
+
+    - name: Stop disposable ACL fixtures
+      if: always()
+      run: |
+        docker rm -f alert-bot-acl-test alert-bot-acl-exporter || true
+        docker network rm alert-bot-acl-ci || true

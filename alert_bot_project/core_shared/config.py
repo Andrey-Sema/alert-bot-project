@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from alert_bot_project.core_shared.redis_acl import REDIS_USERS, validate_service_redis_url
 from alert_bot_project.core_shared.redis_transport import validate_redis_transport_url
 from alert_bot_project.core_shared.secrets import SECRET_NAMES, load_secret
 
@@ -24,6 +25,8 @@ class Settings(BaseSettings):
             forbidden_files += ("API_HASH", "PYROGRAM_SESSION_STRING")
         if service in ("scraper", "migrator"):
             forbidden_files += ("DATABASE_URL",)
+        if service == "migrator":
+            forbidden_files += ("REDIS_URL",)
         if any(os.getenv(f"{name}_FILE") is not None for name in forbidden_files):
             raise ValueError("Unrelated secret files must not be supplied to this service")
         for name in SECRET_NAMES:
@@ -85,6 +88,8 @@ class Settings(BaseSettings):
             raise ValueError("Runtime DATABASE_URL must not be supplied to scraper/migrator")
         if self.SERVICE_ROLE in ("worker", "bot_ui", "migrator") and (self.API_HASH or self.PYROGRAM_SESSION_STRING):
             raise ValueError("Scraper credentials must not be supplied to this service")
+        if self.SERVICE_ROLE in REDIS_USERS:
+            validate_service_redis_url(self.REDIS_URL, self.SERVICE_ROLE)
         return self
 
     @field_validator("REDIS_URL")

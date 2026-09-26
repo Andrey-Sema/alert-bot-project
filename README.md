@@ -259,12 +259,13 @@ cd alert-bot-project
 
 ```bash
 cp env.example .env
-# Root .env: infrastructure interpolation only. Fill Redis/Grafana values.
+# Root .env: infrastructure interpolation only. Fill Grafana values.
 for service in worker bot_ui scraper migrator; do
   cp "deploy/$service.env.example" ".env.$service"
 done
 # Fill each service file independently; never copy root .env into them.
 # Provision PostgreSQL roles first: docs/service_isolation.md
+# Provision Redis ACL/password files before startup: docs/redis_isolation.md
 nano .env
 ```
 
@@ -328,7 +329,7 @@ PYROGRAM_SESSION_STRING=
 
 # ─── Інфраструктура ──────────────────────────────────────────────────────────
 DATABASE_URL=postgresql+asyncpg://REPLACE_RUNTIME_ROLE:REPLACE_DB_PASSWORD@REPLACE_DB_HOST/REPLACE_DB_NAME
-REDIS_URL=redis://redis:6379/0
+REDIS_URL=redis://REPLACE_REDIS_USER:REPLACE_REDIS_PASSWORD@redis:6379/0
 
 # ─── Порти метрик (мають бути УНІКАЛЬНИМИ — перевіряється Pydantic) ──────────
 METRICS_PORT_WORKER=8000

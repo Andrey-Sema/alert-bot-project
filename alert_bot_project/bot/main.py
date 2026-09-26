@@ -8,6 +8,7 @@ from alert_bot_project.bot.middlewares.throttling import ThrottlingMiddleware
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import start_metrics_server
+from alert_bot_project.core_shared.redis_connection import verify_redis_identity
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.privileges import verify_runtime_privileges
 
@@ -21,6 +22,12 @@ async def main() -> None:
         raise RuntimeError("Bot UI requires SERVICE_ROLE=bot_ui")
     async with AsyncSessionLocal() as session:
         await verify_runtime_privileges(session, "bot_ui")
+    try:
+        await verify_redis_identity(redis_client, "bot_ui")
+    except Exception:
+        await redis_client.aclose()
+        await bot.session.close()
+        raise
 
     # Старт сервера метрик (если порт занят, внутри сработает Fail-Fast sys.exit(1))
     start_metrics_server(config.METRICS_PORT_BOT)
