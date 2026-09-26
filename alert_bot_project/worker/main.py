@@ -6,7 +6,6 @@ import os
 import random
 import signal
 import socket
-import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -21,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from alert_bot_project.core_shared.config import config
-from alert_bot_project.core_shared.constants import KYIV_TZ
+from alert_bot_project.core_shared.constants import KYIV_TZ, MAX_GLOBAL_CUSTOM_TRIGGERS, SOURCE_REPLAY_HORIZON_SECONDS
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import (
     ALERTS_PROCESSED,
@@ -38,6 +37,7 @@ from alert_bot_project.core_shared.metrics import (
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
+from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache
 from alert_bot_project.database.activity import prune_old_activity
 from alert_bot_project.database.crud import get_target_user_ids_page, get_users_by_trigger_and_category
 from alert_bot_project.database.engine import AsyncSessionLocal
@@ -45,6 +45,7 @@ from alert_bot_project.database.models import UserTrigger
 from alert_bot_project.services.ukrainealarm import AlarmStatePoller
 from alert_bot_project.worker.broadcaster import Broadcaster
 from alert_bot_project.worker.custom_matcher import CustomTriggerMatcher
+from alert_bot_project.worker.queue_metrics import delivery_backlog
 from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
 
 setup_logging("worker")
@@ -58,8 +59,6 @@ CONSUMER_NAME = f"worker_{socket.gethostname()}_{os.getpid()}"
 NIGHT_START = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
 NIGHT_END = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
 
-REDIS_CUSTOM_TRIGGERS_KEY = "global_custom_triggers"
-REDIS_NEW_TRIGGERS_KEY = "global_custom_triggers:new"
 REDIS_TRIGGERS_VERSION_KEY = "global_custom_triggers:version"
 OFFICIAL_ALARM_KEY = "official_alarm_status:odesa"
 
@@ -73,10 +72,10 @@ else
 end
 """
 
-AUDIT_EXPIRED_LUA = """
+AUDIT_EXPIRED_LUA = f"""
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 redis.call('XADD', KEYS[2], '*', 'source_id', ARGV[1], 'payload', ARGV[2], 'reason', 'older_than_600s')
-redis.call('SET', KEYS[1], '1', 'EX', 604800)
+redis.call('SET', KEYS[1], '1', 'EX', {SOURCE_REPLAY_HORIZON_SECONDS})
 return 1
 """
 
@@ -145,33 +144,21 @@ async def cleanup_dead_consumers(redis_client: Redis) -> None:
 async def sync_global_custom_triggers(redis_client: Redis) -> None:
     from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS
 
+    version = await redis_client.get(REDIS_TRIGGERS_VERSION_KEY)
     all_static = list(ODESA_LOCS.keys()) + list(OUTSIDE_LOCS.keys())
     async with AsyncSessionLocal() as session:
         stmt = select(UserTrigger.trigger_word).where(UserTrigger.trigger_word.not_in(all_static)).distinct()
         res = await session.execute(stmt)
         triggers = res.scalars().all()
 
-        if set(triggers) == await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY):  # type: ignore[misc]
-            await redis_client.incr(REDIS_TRIGGERS_VERSION_KEY)
-            return
-
-        if not triggers:
-            await redis_client.delete(REDIS_CUSTOM_TRIGGERS_KEY)
-            await redis_client.incr(REDIS_TRIGGERS_VERSION_KEY)
-            return
-
-        # redis.asyncio Pipeline-команди — це корутини, їх ОБОВ'ЯЗКОВО треба await-ити
-        # навіть у буферизованому режимі. Без await вони ніколи не потрапляють у
-        # command_stack, і pipe.execute() виконує 0 команд — раніше delete/sadd/rename
-        # викликались без await і мовчки нічого не робили (глобальний пул кастомних
-        # фраз ніколи не перебудовувався при старті воркера).
-        pipe = redis_client.pipeline()
-        pipe.delete(REDIS_NEW_TRIGGERS_KEY)
-        pipe.sadd(REDIS_NEW_TRIGGERS_KEY, *triggers)
-        pipe.rename(REDIS_NEW_TRIGGERS_KEY, REDIS_CUSTOM_TRIGGERS_KEY)
-        pipe.incr(REDIS_TRIGGERS_VERSION_KEY)
-        await pipe.execute()
-        logger.info("Synchronized %d global custom triggers via Pipeline.", len(triggers))
+        desired = set(triggers)
+        if len(desired) > MAX_GLOBAL_CUSTOM_TRIGGERS:
+            raise ValueError("Global custom trigger limit exceeded in database")
+        changed = await reconcile_custom_trigger_cache(redis_client, desired, version)
+        if changed == 1:
+            logger.info("Synchronized %d global custom triggers.", len(desired))
+        elif changed == -1:
+            logger.info("Custom trigger cache changed during reconciliation; retrying next cycle")
 
 
 async def init_redis_consumer_group(redis_client: Redis) -> None:
@@ -194,10 +181,12 @@ async def monitor_dlq_backlog(redis_client: Redis) -> None:
             await trim_acknowledged_stream(redis_client, STREAM_NAME)
             await trim_acknowledged_stream(redis_client, Broadcaster.delivery_stream_name)
             SOURCE_BACKLOG.set(await redis_client.xlen(STREAM_NAME))
-            DELIVERY_BACKLOG.set(await redis_client.xlen(Broadcaster.delivery_stream_name))
+            pending, oldest_age = await delivery_backlog(
+                redis_client, Broadcaster.delivery_stream_name, Broadcaster.delivery_group_name
+            )
+            DELIVERY_BACKLOG.set(pending)
             DELAYED_BACKLOG.set(await redis_client.zcard("delayed_alerts_queue"))
-            oldest = await redis_client.xrange(Broadcaster.delivery_stream_name, count=1)
-            DELIVERY_OLDEST_AGE.set(max(0, time.time() - int(oldest[0][0].split("-")[0]) / 1000) if oldest else 0)
+            DELIVERY_OLDEST_AGE.set(oldest_age)
         except asyncio.CancelledError:
             raise
         except RedisError:

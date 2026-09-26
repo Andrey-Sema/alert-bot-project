@@ -1,9 +1,10 @@
 import os
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from alert_bot_project.core_shared.secrets import load_secret
 
 
 class Settings(BaseSettings):
@@ -13,10 +14,7 @@ class Settings(BaseSettings):
         for name in ("BOT_TOKEN", "API_HASH", "DATABASE_URL", "REDIS_URL", "UKRAINEALARM_API_KEY"):
             path = os.getenv(f"{name}_FILE")
             if path:
-                secret_path = Path(path)
-                if secret_path.stat().st_size > 4096:
-                    raise ValueError(f"{name}_FILE exceeds 4096 bytes")
-                values[name] = secret_path.read_text(encoding="utf-8").strip()
+                values[name] = load_secret(name)
         return values
 
     # Telegram Bot Settings

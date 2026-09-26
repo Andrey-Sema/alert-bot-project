@@ -22,7 +22,7 @@ DELIVERY_PERMANENT_FAILURES = Counter(
     "worker_delivery_permanent_failures_total", "Permanent Telegram delivery failures"
 )
 SOURCE_BACKLOG = Gauge("worker_source_stream_depth", "Source stream entries waiting for safe retention")
-DELIVERY_BACKLOG = Gauge("worker_delivery_stream_depth", "Durable delivery entries waiting for safe retention")
+DELIVERY_BACKLOG = Gauge("worker_delivery_stream_depth", "Pending and unseen recipient delivery jobs")
 RECIPIENTS_SELECTED = Counter("worker_recipients_selected_total", "Recipient alert jobs accepted for delivery")
 DELIVERY_OUTCOMES = Counter("worker_delivery_outcomes_total", "Telegram delivery outcomes", ["stage", "outcome"])
 DELIVERY_LATENCY = Histogram(

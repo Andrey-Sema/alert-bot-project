@@ -9,6 +9,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from alert_bot_project.core_shared.secrets import load_secret
 from alert_bot_project.database.models import Base
 
 # this is the Alembic Config object, which provides
@@ -44,7 +45,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = os.environ["DATABASE_URL"]
+    url = load_secret("DATABASE_URL")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -69,7 +70,7 @@ async def run_async_migrations() -> None:
 
     """
 
-    database_url = os.environ["DATABASE_URL"]
+    database_url = load_secret("DATABASE_URL")
     local_test = os.getenv("MIGRATION_LOCAL_TEST") == "1" and urlsplit(database_url).hostname in (
         "localhost",
         "127.0.0.1",

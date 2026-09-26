@@ -13,7 +13,8 @@ from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisError
 
-from alert_bot_project.scraper.publisher import PUBLISH_ONCE_LUA
+from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache, update_custom_trigger_cache
+from alert_bot_project.scraper.publisher import PUBLISH_ONCE_LUA, SOURCE_REPLAY_HORIZON_SECONDS, RedisPublisher
 from alert_bot_project.services.privacy import (
     BEGIN_DELIVERY_LUA,
     END_DELIVERY_LUA,
@@ -23,6 +24,7 @@ from alert_bot_project.services.privacy import (
 )
 from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, STORE_DLQ_LUA, Broadcaster
 from alert_bot_project.worker.main import init_redis_consumer_group
+from alert_bot_project.worker.queue_metrics import delivery_backlog
 from alert_bot_project.worker.rate_limit import ACQUIRE_SLOT_LUA
 from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
 
@@ -56,6 +58,8 @@ async def test_fanout_is_idempotent_and_delayed_pop_preserves_every_job(recipien
 
         assert await client.xlen(broadcaster.delivery_stream_name) == recipients
         assert await client.zcard(broadcaster.delayed_queue_key) == 2 * recipients
+        marker_ttl = await client.ttl("delivery:enqueued:-100:42:1")
+        assert 0 < marker_ttl <= SOURCE_REPLAY_HORIZON_SECONDS
 
         moved = 0
         while True:
@@ -157,6 +161,7 @@ async def test_source_publish_is_idempotent_after_uncertain_result() -> None:
         assert first != 0
         assert second == 0
         assert await client.xlen(stream) == 1
+        assert 0 < await client.ttl(marker) <= SOURCE_REPLAY_HORIZON_SECONDS
     finally:
         await client.delete(marker, stream)
         await client.aclose()
@@ -296,4 +301,73 @@ async def test_registration_cannot_overlap_deletion_lock() -> None:
         assert await client.exists(key) == 0
     finally:
         await client.delete(key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_delivery_age_ignores_acknowledged_history_but_detects_stuck_job() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    stream = f"test:metrics:{suffix}"
+    group = f"test:metrics-group:{suffix}"
+    old_ms = int((time.time() - 900) * 1000)
+    try:
+        first = await client.xadd(stream, {"payload": "acknowledged"}, id=f"{old_ms}-0")
+        await client.xgroup_create(stream, group, id="0-0")
+        await client.xreadgroup(group, "consumer", {stream: ">"}, count=1)
+        await client.xack(stream, group, first)
+        assert await delivery_backlog(client, stream, group) == (0, 0.0)
+
+        second = await client.xadd(stream, {"payload": "stuck"}, id=f"{old_ms + 1}-0")
+        depth, age = await delivery_backlog(client, stream, group)
+        assert depth == 1
+        assert age > 600
+        await client.xreadgroup(group, "consumer", {stream: ">"}, count=1)
+        depth, age = await delivery_backlog(client, stream, group)
+        assert depth == 1
+        assert age > 600
+        await client.xack(stream, group, second)
+        assert await delivery_backlog(client, stream, group) == (0, 0.0)
+    finally:
+        await client.delete(stream)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_source_markers_gain_ttl_without_shortening_existing_ttl() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    legacy = f"source:published:-100:{suffix}"
+    recent = f"source:published:-101:{suffix}"
+    publisher = RedisPublisher()
+    publisher._redis = client
+    try:
+        await client.set(legacy, "1-0")
+        await client.set(recent, "1-0", ex=60)
+        await publisher.expire_legacy_markers()
+        assert SOURCE_REPLAY_HORIZON_SECONDS - 60 < await client.ttl(legacy) <= SOURCE_REPLAY_HORIZON_SECONDS
+        assert 0 < await client.ttl(recent) <= 60
+    finally:
+        await client.delete(legacy, recent)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@settings(max_examples=8, deadline=None)
+@given(phrases=st.sets(st.text(alphabet="абвгде", min_size=3, max_size=8), max_size=10))
+async def test_trigger_cache_version_changes_only_with_membership(phrases: set[str]) -> None:
+    client = await _redis()
+    keys = ("global_custom_triggers", "global_custom_triggers:version")
+    try:
+        await client.delete(*keys)
+        assert await reconcile_custom_trigger_cache(client, phrases, None) == int(bool(phrases))
+        version = await client.get(keys[1])
+        assert await reconcile_custom_trigger_cache(client, phrases, version) == 0
+        assert await client.get(keys[1]) == version
+        assert await client.smembers(keys[0]) == phrases
+        assert await update_custom_trigger_cache(client, "уникальная_фраза", add=True)
+        assert not await update_custom_trigger_cache(client, "уникальная_фраза", add=True)
+        assert await reconcile_custom_trigger_cache(client, phrases, version) == -1
+    finally:
+        await client.delete(*keys)
         await client.aclose()

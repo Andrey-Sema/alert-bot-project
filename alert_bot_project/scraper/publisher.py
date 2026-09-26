@@ -5,13 +5,14 @@ from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, RedisError
 
 from alert_bot_project.core_shared.config import config
+from alert_bot_project.core_shared.constants import SOURCE_REPLAY_HORIZON_SECONDS
 
 logger = logging.getLogger("scraper.publisher")
 
-PUBLISH_ONCE_LUA = """
+PUBLISH_ONCE_LUA = f"""
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 local id = redis.call('XADD', KEYS[2], '*', 'payload', ARGV[1])
-redis.call('SET', KEYS[1], id)
+redis.call('SET', KEYS[1], id, 'EX', {SOURCE_REPLAY_HORIZON_SECONDS})
 return id
 """
 
@@ -61,6 +62,27 @@ class RedisPublisher:
         except RedisError:
             logger.exception("❌ Помилка виконання команди в Redis Streams")
             raise
+
+    async def expire_legacy_markers(self) -> None:
+        """Give markers created before the retention policy a bounded lifetime."""
+        if self._redis is None:
+            await self.connect()
+        assert self._redis is not None
+        keys: list[str] = []
+        async for key in self._redis.scan_iter(match="source:published:*", count=500):
+            keys.append(key)
+            if len(keys) >= 500:
+                await self._expire_marker_batch(keys)
+                keys.clear()
+        if keys:
+            await self._expire_marker_batch(keys)
+
+    async def _expire_marker_batch(self, keys: list[str]) -> None:
+        assert self._redis is not None
+        pipe = self._redis.pipeline(transaction=False)
+        for key in keys:
+            pipe.expire(key, SOURCE_REPLAY_HORIZON_SECONDS, nx=True)
+        await pipe.execute()
 
     async def close(self) -> None:
         """Чисто закриває пул підключень до Redis."""

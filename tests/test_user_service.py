@@ -12,7 +12,9 @@ from alert_bot_project.services.user_service import UserService
 
 @pytest.fixture
 def mock_redis() -> AsyncMock:
-    return AsyncMock()
+    redis = AsyncMock()
+    redis.register_script = MagicMock(return_value=AsyncMock(return_value=1))
+    return redis
 
 
 @pytest.fixture
@@ -72,7 +74,7 @@ class TestAddCustomTrigger:
             pytest.raises(RuntimeError),
         ):
             await user_service.add_custom_trigger(12345, "new_phrase")
-        user_service.redis.sadd.assert_not_awaited()
+        user_service.redis.register_script.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_success_adds_to_redis(self, user_service: UserService) -> None:
@@ -87,7 +89,7 @@ class TestAddCustomTrigger:
 
             assert success is True
             assert "додано" in msg or "Локацію" in msg
-            user_service.redis.sadd.assert_called_once_with("global_custom_triggers", "new_phrase")
+            user_service.redis.register_script.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_limit_reached_blocks_addition(self, user_service: UserService) -> None:
@@ -99,7 +101,7 @@ class TestAddCustomTrigger:
 
         assert success is False
         assert "ліміту" in msg
-        user_service.redis.sadd.assert_not_called()
+        user_service.redis.register_script.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_add_custom_trigger_redis_infrastructure_failure(self, user_service: UserService) -> None:
@@ -110,7 +112,7 @@ class TestAddCustomTrigger:
             patch("alert_bot_project.services.user_service.get_or_create_user", return_value=mock_user),
             patch("alert_bot_project.services.user_service.add_user_trigger", return_value=True),
         ):
-            user_service.redis.sadd.side_effect = ConnectionError("Connection refused by Redis broker")
+            user_service.redis.register_script.side_effect = ConnectionError("Connection refused by Redis broker")
             success, _ = await user_service.add_custom_trigger(12345, "аварийный_сектор")
             assert success is True
             user_service.session.commit.assert_awaited_once()
@@ -133,7 +135,7 @@ class TestDeleteCustomTrigger:
             success, _msg = await user_service.delete_custom_trigger(12345, "my_phrase")
 
             assert success is True
-            user_service.redis.srem.assert_called_once_with("global_custom_triggers", "my_phrase")
+            user_service.redis.register_script.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_delete_retains_in_redis_if_other_users_exist(self, user_service: UserService) -> None:
@@ -149,7 +151,7 @@ class TestDeleteCustomTrigger:
             user_service.session.execute.return_value = mock_result
 
             await user_service.delete_custom_trigger(12345, "popular_phrase")
-            user_service.redis.srem.assert_not_called()
+            user_service.redis.register_script.assert_not_called()
 
 
 class TestApplyMutePreset:
