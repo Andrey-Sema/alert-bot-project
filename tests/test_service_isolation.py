@@ -95,6 +95,7 @@ def test_runtime_profile_rejects_migration_secret_before_file_access(
 def test_runtime_profile_does_not_require_scraper_credentials(monkeypatch: pytest.MonkeyPatch, service: str) -> None:
     for name in ("API_HASH", "API_ID", "GROUP_ID", "MIGRATION_DATABASE_URL"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("REDIS_URL", f"redis://alert_{service}:test-credential@redis/0")
     settings = Settings(SERVICE_ROLE=service, _env_file=None)
     assert not settings.API_HASH
     assert not settings.MIGRATION_DATABASE_URL
@@ -109,6 +110,7 @@ def test_migrator_cannot_use_runtime_url_as_fallback(monkeypatch: pytest.MonkeyP
 def test_scraper_does_not_need_bot_or_database_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("BOT_TOKEN", "DATABASE_URL", "MIGRATION_DATABASE_URL"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("REDIS_URL", "redis://alert_scraper:test-credential@redis/0")
     settings = Settings(SERVICE_ROLE="scraper", _env_file=None)
     assert not settings.BOT_TOKEN
     assert not settings.DATABASE_URL

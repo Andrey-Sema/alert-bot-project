@@ -6,8 +6,10 @@
 
 Проверка Redis TLS clients описана в `redis_transport.md`: обязательная проверка
 цепочки сертификатов и hostname, запрет URL overrides, настоящие TLS negative
-tests. Это ограниченное доказательство V12.3.2; внутренний plaintext Redis и
-раздельные ACL остаются открытыми требованиями.
+tests. Это ограниченное доказательство V12.3.2; внутренний Redis остаётся
+plaintext. ACL реализованы в `redis_isolation.md`; эксплуатационная проверка их
+конфигурации и ротации остаётся открытой. Именованные роли не подтверждают
+short-lived credentials по V13.2.1.
 
 Область: Python Bot UI с long polling, scraper Pyrogram, worker, миграции, SQLite outbox, Redis Streams, PostgreSQL, сборка и CI. Grafana, Prometheus, Alertmanager, настройки хоста, Telegram provider, реальная БД, резервные копии и операционные процедуры требуют отдельного подтверждения. Готового стенда нет: эксплуатационные требования имеют UNTESTED или GAP, а не PASS. Факт отсутствия browser frontend, OAuth/OIDC, JWT, пользовательской загрузки файлов и WebRTC относится к приложению бота; browser security внешней Grafana от этого не становится подтверждённой.
 

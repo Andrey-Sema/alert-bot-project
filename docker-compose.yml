@@ -24,12 +24,14 @@ services:
     image: redis:7.2-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
     container_name: odesa_alert_redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --appendfsync always --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is strictly required in .env}
+    command: redis-server --appendonly yes --appendfsync always --aclfile /run/secrets/redis_users_acl
+    secrets:
+      - redis_users_acl
+      - redis_health_password
     volumes:
       - redis_data:/data
     healthcheck:
-      # БЫЛО: test: ["CMD", "redis-cli", "ping"]
-      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping" ]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/redis_health_password) redis-cli --user alert_health ping"]
       interval: 5s
       timeout: 3s
       retries: 3
@@ -41,8 +43,14 @@ services:
     container_name: odesa_alert_redis_exporter
     restart: unless-stopped
     environment:
-      - REDIS_ADDR=redis:6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_ADDR=redis://redis:6379
+      - REDIS_USER=alert_monitor
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_exporter_credentials
+      - REDIS_EXPORTER_CONFIG_COMMAND=-
+      - REDIS_EXPORTER_EXPORT_CLIENT_LIST=false
+      - REDIS_EXPORTER_DISABLE_EXPORTING_KEY_VALUES=true
+    secrets:
+      - redis_exporter_credentials
     # Начинаем скрейпить метрики только тогда, когда сам Редис ответил на PING
     depends_on:
       redis:
@@ -64,10 +72,6 @@ services:
       restart_policy:
         condition: on-failure
         max_attempts: 5
-    # ✅ СИНХРОНИЗАЦИЯ: Мигратор ждет, пока поднимется транспортная шина
-    depends_on:
-      redis:
-        condition: service_healthy
 
   # =========================================================================
   # СЛОЙ БИЗНЕС-ЛОГИКИ ПРИЛОЖЕНИЯ (PYTHON / ASYNCIO)
@@ -233,6 +237,12 @@ networks:
     driver: bridge
 
 secrets:
+  redis_users_acl:
+    file: ./secrets/redis_users.acl
+  redis_health_password:
+    file: ./secrets/redis_health_password
+  redis_exporter_credentials:
+    file: ./secrets/redis_exporter_credentials.json
   alertmanager_bot_token:
     file: ./secrets/alertmanager_bot_token
   alertmanager_chat_id:

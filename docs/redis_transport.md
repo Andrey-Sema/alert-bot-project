@@ -30,6 +30,6 @@ OpenSSL требуется в тестовом окружении; отсутс�
 ASVS [v5.0.0-12.3.2](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.csv)
 остаётся PARTIAL: этот пакет подтверждает ограниченную часть требования для
 Redis клиентов. Остальные соединения и серверные сертификаты требуют отдельной
-проверки. Внутренний Redis в текущем Compose использует plaintext и общий пароль;
-раздельные Redis ACL, TLS брокера/exporter, ротация и эксплуатационный тест
-остаются GAP/UNTESTED. Они не считаются выполненными этим изменением.
+проверки. Внутренний Redis в текущем Compose использует plaintext;
+раздельные ACL и права exporter описаны в `redis_isolation.md`. TLS
+брокера/exporter, ротация и эксплуатационная проверка остаются GAP/UNTESTED.

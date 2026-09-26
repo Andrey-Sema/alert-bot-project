@@ -6,7 +6,7 @@ from redis.exceptions import ConnectionError, RedisError
 
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.constants import SOURCE_REPLAY_HORIZON_SECONDS
-from alert_bot_project.core_shared.redis_connection import create_service_redis
+from alert_bot_project.core_shared.redis_connection import create_service_redis, verify_redis_identity
 
 logger = logging.getLogger("scraper.publisher")
 
@@ -30,6 +30,8 @@ class RedisPublisher:
             redis_client = create_service_redis(self.redis_url)
             try:
                 await redis_client.ping()
+                if config.SERVICE_ROLE != "development":
+                    await verify_redis_identity(redis_client, "scraper")
             except Exception:
                 await redis_client.aclose()
                 raise

@@ -5,7 +5,7 @@ import sys
 
 from sqlalchemy import text
 
-from alert_bot_project.core_shared.redis_connection import create_service_redis
+from alert_bot_project.core_shared.redis_connection import create_service_redis, verify_redis_identity
 
 
 async def check_ready(service: str) -> bool:
@@ -13,6 +13,7 @@ async def check_ready(service: str) -> bool:
     try:
         async with asyncio.timeout(4):
             await redis_client.ping()
+            await verify_redis_identity(redis_client, service)
             if service in ("worker", "bot_ui"):
                 from alert_bot_project.database.engine import AsyncSessionLocal
                 from alert_bot_project.database.privileges import verify_runtime_privileges
