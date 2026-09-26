@@ -9,6 +9,7 @@ import logging
 import os
 import socket
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -23,6 +24,7 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 from aiogram.types import InlineKeyboardMarkup
+from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 from sqlalchemy import select
@@ -49,6 +51,8 @@ from alert_bot_project.database.activity import record_activity
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserSettings
 from alert_bot_project.services.privacy import BEGIN_DELIVERY_LUA, END_DELIVERY_LUA
+from alert_bot_project.worker.delivery_contract import DeliveryJob, delivery_content, parse_delivery_job
+from alert_bot_project.worker.delivery_lease import DeliveryLease
 from alert_bot_project.worker.rate_limit import TelegramRateLimiter
 
 logger = logging.getLogger("worker.broadcaster")
@@ -118,6 +122,8 @@ class DeliveryOutcome:
 class DeliveryReservation:
     generation: str
     reserved: bool = False
+    job: DeliveryJob | None = None
+    guard: Callable[[], Awaitable[bool]] | None = None
 
 
 class Broadcaster:
@@ -246,6 +252,13 @@ class Broadcaster:
             )
         except TimeoutError:
             return DeliveryOutcome("retry", "rate_limit_timeout")
+        if reservation is not None and reservation.guard is not None and not await reservation.guard():
+            return DeliveryOutcome("retry", "ownership_lost")
+        if reservation is not None and reservation.job is not None:
+            content = delivery_content(reservation.job, text, disable_notification)
+            if content is None:
+                return DeliveryOutcome("cancelled", "stale_delivery")
+            text, disable_notification = content
         if reservation is not None:
             begin = self.redis.register_script(BEGIN_DELIVERY_LUA)
             reservation.reserved = bool(
@@ -318,17 +331,20 @@ class Broadcaster:
         await self._move_to_dlq(message_id, payload, reason, stage_key)
         logger.error("Delivery %s moved to DLQ after five failures", message_id)
 
-    async def _deliver_one(self, message_id: str, data: dict[str, str]) -> None:
+    async def _deliver_one(
+        self, message_id: str, data: dict[str, str], guard: Callable[[], Awaitable[bool]] | None = None
+    ) -> None:
         raw_payload = data.get("payload", "")
         try:
-            job: dict[str, Any] = json.loads(raw_payload)
-            chat_id = int(job["chat_id"])
-            step = int(job["step"])
-            text = str(job["text"])
-            if step not in (1, 2, 3):
-                raise ValueError("invalid delivery step")
-        except (ValueError, KeyError, TypeError) as exc:
-            await self._finish_failed_job(message_id, raw_payload, f"invalid job: {exc}")
+            parsed_job = parse_delivery_job(raw_payload)
+            job = parsed_job.model_dump(mode="json")
+            chat_id = parsed_job.chat_id
+            step = parsed_job.step
+            text = parsed_job.text
+        except (ValidationError, ValueError, TypeError, RecursionError):
+            # Invalid data cannot become valid by retrying; never log its contents.
+            logger.warning("Invalid delivery contract moved to quarantine: %s", message_id)
+            await self._move_to_dlq(message_id, "", "invalid_delivery_contract")
             return
 
         event_id = job.get("event_id")
@@ -349,9 +365,6 @@ class Broadcaster:
             except (TypeError, ValueError):
                 await self._finish_failed_job(message_id, raw_payload, "invalid source timestamp", permanent=True)
                 return
-        if step > 1 and not isinstance(event_id, str):
-            await self._finish_failed_job(message_id, raw_payload, "missing event identity")
-            return
         if isinstance(event_id, str) and await self.redis.get(f"delivery:stage:{event_id}:{step}") == "sent":
             await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
             return
@@ -400,7 +413,7 @@ class Broadcaster:
             await self._finish_failed_job(message_id, raw_payload, "recipient_blocked", permanent=True)
             return
 
-        reservation = DeliveryReservation(str(job.get("recipient_generation", "0")))
+        reservation = DeliveryReservation(str(job.get("recipient_generation", "0")), job=parsed_job, guard=guard)
         try:
             outcome = await self.send_single_message(
                 chat_id,
@@ -411,7 +424,10 @@ class Broadcaster:
                 reservation=reservation,
             )
             if outcome.status == "cancelled":
-                await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                if outcome.reason == "stale_delivery" and event_id is not None:
+                    await self._skip_stage(message_id, event_id, step)
+                else:
+                    await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
                 return
             if outcome.status == "sent":
                 DELIVERY_OUTCOMES.labels(stage=str(step), outcome="sent").inc()
@@ -433,6 +449,8 @@ class Broadcaster:
                 await self.redis.delete(f"delivery:retry:{message_id}")
                 await self._record_delivered(chat_id)
             else:
+                if outcome.reason == "ownership_lost":
+                    return  # The new owner is responsible for retries and ACK.
                 DELIVERY_OUTCOMES.labels(stage=str(step), outcome=outcome.status).inc()
                 if outcome.status == "blocked":
                     await self.redis.set(f"telegram:blocked:{chat_id}", "re_onboarding_required")
@@ -470,7 +488,7 @@ class Broadcaster:
                 )
                 next_start_id = claimed[0]
                 for message_id, data in claimed[1]:
-                    await self._deliver_one(message_id, data)
+                    await self._deliver_owned(message_id, data, consumer)
                 incoming = await self.redis.xreadgroup(
                     self.delivery_group_name,
                     consumer,
@@ -480,7 +498,7 @@ class Broadcaster:
                 )
                 for _stream, messages in incoming:
                     for message_id, data in messages:
-                        await self._deliver_one(message_id, data)
+                        await self._deliver_owned(message_id, data, consumer)
             except asyncio.CancelledError:
                 raise
             except ResponseError as exc:
@@ -492,6 +510,19 @@ class Broadcaster:
             except Exception:
                 logger.exception("Delivery stream worker failed; pending jobs will be reclaimed")
                 await asyncio.sleep(2)
+
+    async def _deliver_owned(self, message_id: str, data: dict[str, str], consumer: str) -> None:
+        try:
+            job = parse_delivery_job(data.get("payload", ""))
+            stage = f"{job.event_id}:{job.step}" if job.event_id else f"legacy:{message_id}"
+        except (ValueError, TypeError, RecursionError):
+            stage = f"invalid:{message_id}"
+        lease = DeliveryLease(
+            self.redis, self.delivery_stream_name, self.delivery_group_name, consumer, message_id, stage
+        )
+        await lease.run(
+            lambda: self._deliver_one(message_id, data, lease.renew), config.TELEGRAM_MAX_RETRY_SECONDS + 150
+        )
 
     async def process_delayed_alerts(self) -> None:
         script = self.redis.register_script(POP_MATURE_TASKS_LUA)

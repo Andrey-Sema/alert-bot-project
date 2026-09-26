@@ -25,6 +25,7 @@ from alert_bot_project.services.privacy import (
     user_privacy_lock,
 )
 from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, STORE_DLQ_LUA, Broadcaster
+from alert_bot_project.worker.delivery_lease import DeliveryLease
 from alert_bot_project.worker.main import init_redis_consumer_group
 from alert_bot_project.worker.queue_metrics import delivery_backlog
 from alert_bot_project.worker.rate_limit import ACQUIRE_SLOT_LUA
@@ -41,6 +42,70 @@ async def _redis() -> Redis:
             pytest.fail("CI Redis service is required for delivery integration tests")
         pytest.skip("local Redis is not running")
     return client
+
+
+@pytest.mark.asyncio
+async def test_delivery_heartbeat_prevents_claim_and_fences_forced_new_owner() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    stream, group = f"test:lease:{suffix}", "lease_group"
+    stage = f"test:stage:{suffix}:1"
+    lease = None
+    operation_task = None
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_operation() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    try:
+        await client.xgroup_create(stream, group, id="0-0", mkstream=True)
+        message_id = await client.xadd(stream, {"payload": "test"})
+        await client.xreadgroup(group, "original", {stream: ">"}, count=1)
+        lease = DeliveryLease(client, stream, group, "original", message_id, stage)
+        lease.interval = 0.01
+        operation_task = asyncio.create_task(lease.run(slow_operation, 5))
+        await asyncio.wait_for(started.wait(), 2)
+        await asyncio.sleep(0.2)
+        claimed = await client.xautoclaim(stream, group, "other", min_idle_time=100, start_id="0-0", count=1)
+        assert claimed[1] == []
+        # Even a forced transfer must stop the old owner's operation.
+        await client.xclaim(stream, group, "other", min_idle_time=0, message_ids=[message_id])
+        assert not await lease.renew()
+        await asyncio.wait_for(operation_task, 2)
+        assert cancelled.is_set()
+        assert (await client.xpending_range(stream, group, "-", "+", 1))[0]["consumer"] == "other"
+    finally:
+        if operation_task:
+            operation_task.cancel()
+            await asyncio.gather(operation_task, return_exceptions=True)
+        await client.delete(stream, f"delivery:lease:{stage}")
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_event_stage_cannot_reserve_two_delivery_slots() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    stream, group = f"test:lease:{suffix}", "lease_group"
+    stage = f"test:stage:{suffix}:1"
+    try:
+        await client.xgroup_create(stream, group, id="0-0", mkstream=True)
+        first = await client.xadd(stream, {"payload": "same_event"})
+        second = await client.xadd(stream, {"payload": "same_event"})
+        await client.xreadgroup(group, "a", {stream: ">"}, count=1)
+        await client.xreadgroup(group, "b", {stream: ">"}, count=1)
+        a = DeliveryLease(client, stream, group, "a", first, stage)
+        b = DeliveryLease(client, stream, group, "b", second, stage)
+        results = await asyncio.gather(a.renew(), b.renew())
+        assert sorted(results) == [False, True]
+    finally:
+        await client.delete(stream, f"delivery:lease:{stage}")
+        await client.aclose()
 
 
 @pytest.mark.asyncio

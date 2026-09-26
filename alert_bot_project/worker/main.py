@@ -4,9 +4,9 @@ import json
 import logging
 import os
 import random
+import secrets
 import signal
 import socket
-import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -294,7 +294,7 @@ async def _resolve_target_users(
     """
     cache_hash_key = f"cache:alert_targets:{checksum}"
     lock_key = f"lock:cache_build:{checksum}"
-    lock_token = str(uuid.uuid4())
+    lock_token = secrets.token_hex(32)
 
     for _ in range(15):
         cached_targets = await _try_get_cached_targets(redis_client, cache_hash_key)
@@ -331,7 +331,7 @@ async def _validate_payload(redis_client: Redis, redis_msg_id: str, raw_json: st
     try:
         alert_data = AlertMessage.model_validate_json(raw_json)
     except (ValidationError, ValueError):
-        logger.exception("Dropped corrupted payload")
+        logger.warning("Dropped invalid source contract: %s", redis_msg_id)
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return None
 
@@ -606,7 +606,7 @@ async def main() -> None:
     start_metrics_server(config.METRICS_PORT_WORKER)
 
     bot = Bot(token=config.BOT_TOKEN)
-    redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
+    redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True, socket_connect_timeout=3, socket_timeout=5)
 
     release_lock_script: ReleaseLockScript = redis_client.register_script(RELEASE_LOCK_LUA)
 

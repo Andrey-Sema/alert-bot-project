@@ -44,7 +44,9 @@ def __getattr__(name: str) -> Any:
     if name == "redis_client":
         if _redis_client is None:
             logger.info("Lazy-initializing shared production Redis connection pool...")
-            _redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
+            _redis_client = Redis.from_url(
+                config.REDIS_URL, decode_responses=True, socket_connect_timeout=3, socket_timeout=5
+            )
         return _redis_client
 
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

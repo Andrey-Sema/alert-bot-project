@@ -26,7 +26,9 @@ class RedisPublisher:
     async def connect(self) -> None:
         """Ініціалізує з'єднання з пулом Redis Streams."""
         if not self._redis:
-            redis_client = Redis.from_url(self.redis_url, decode_responses=True)
+            redis_client = Redis.from_url(
+                self.redis_url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5
+            )
             try:
                 await redis_client.ping()
             except Exception:

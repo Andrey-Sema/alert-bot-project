@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-import uuid
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -48,7 +48,7 @@ return redis.call('DEL', KEYS[1])
 async def user_privacy_lock(redis_client: Redis, user_id: int) -> AsyncIterator[None]:
     """Serialize registration and deletion of one recipient."""
     key = f"privacy:operation:{user_id}"
-    token = uuid.uuid4().hex
+    token = secrets.token_hex(32)
     if not await redis_client.set(key, token, nx=True, ex=90):
         raise RedisError("Another profile operation is in progress; retry later")
     stopped = asyncio.Event()
@@ -98,7 +98,7 @@ async def _scrub_recipient_stream(redis_client: Redis, stream: str, user_id: int
 async def _delete_user_data_locked(session: AsyncSession, redis_client: Redis, user_id: int) -> None:
     # Fence old jobs first; the random generation prevents them being delivered
     # after a user registers again. Redis must be available to accept deletion.
-    generation = uuid.uuid4().hex
+    generation = secrets.token_hex(32)
     fence = redis_client.register_script(FENCE_DELETION_LUA)
     await fence(keys=[f"privacy:deleted:{user_id}", f"privacy:generation:{user_id}"], args=[generation])
     # A send that reserved its slot before the fence must finish before
