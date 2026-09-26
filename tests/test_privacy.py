@@ -49,7 +49,7 @@ async def test_delete_cascades_and_scrubs_user_jobs() -> None:
     session.commit.assert_awaited_once()
     fence_call = redis.register_script.return_value.await_args_list[0]
     assert fence_call.kwargs["keys"] == ["privacy:deleted:123", "privacy:generation:123"]
-    assert len(fence_call.kwargs["args"][0]) == 32
+    assert len(fence_call.kwargs["args"][0]) == 64
     redis.zrem.assert_awaited_once()
     redis.xack.assert_awaited_once_with("delivery_stream", "delivery_workers", "1-0")
     redis.xdel.assert_any_await("delivery_stream", "1-0")

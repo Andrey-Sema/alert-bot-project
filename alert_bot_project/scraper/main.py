@@ -67,7 +67,7 @@ async def handle_channel_post(client: Client, message: Message) -> None:
             message_id=message.id, chat_id=message.chat.id, raw_text=raw_text, timestamp=source_time
         )
     except Exception:
-        logger.exception("Payload validation failed for message ID: %s, skipping", message.id)
+        logger.warning("Payload validation failed for message ID: %s, skipping", message.id)
         return
 
     # ✅ ФИКС 2: Выносим нативную сериализацию Pydantic v2 за пределы цикла ретраев.
