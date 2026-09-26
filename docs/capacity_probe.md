@@ -1,0 +1,7 @@
+# Capacity evidence protocol
+
+The automated Redis probe exercises 125 recipients at 1, 5 and 20 source posts per minute without contacting Telegram. CI requires zero missing accepted jobs, P99 per-post fanout below five seconds and under 64 MiB additional Redis memory. These figures establish a repeatable lower bound for Redis fanout only; they do not establish the maximum live audience or Telegram delivery latency.
+
+Run `python -m alert_bot_project.scripts.capacity_probe --recipients 125 --posts-per-minute 1 5 20 --redis-url "$REDIS_URL"` in an isolated staging Redis. Increase recipients in steps and preserve the JSON report, Redis memory and CPU readings, PostgreSQL `EXPLAIN (ANALYZE, BUFFERS)` for recipient selection, and Telegram Bot API 429 counts. The live capacity claim is the largest N for which all three rates have zero accepted-job loss, bounded memory, and first-delivery P95/P99 within the agreed incident SLO. Record the hardware, replica count, network and date with each result. Never run the synthetic probe against a production Redis without a separate capacity window: its recipient jobs are deliberately fake and are removed at the end.
+
+The shared Telegram rate limiter grants at most 20 global slots per second and has a separate repeat throttle of at most five slots per second. The Redis integration test verifies a blocked repeat cannot reserve a slot that a first alert can use. A staging drill must still measure fairness with real Telegram responses and 429 backoff.

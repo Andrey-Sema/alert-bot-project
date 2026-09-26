@@ -200,6 +200,17 @@ async def test_mixed_clear_and_active_post_routes_only_active_location() -> None
 
 
 @pytest.mark.asyncio
+async def test_recovered_older_threat_is_suppressed_after_newer_clear() -> None:
+    redis_client = AsyncMock()
+    redis_client.get.side_effect = lambda key: "51" if key == "threat:clear_id:-100" else None
+    payload = AlertMessage(message_id=50, chat_id=-100, raw_text="Ракети летять на Пересип").model_dump_json()
+    with patch("alert_bot_project.worker.main.get_target_user_ids_page") as page_query:
+        await process_single_stream_payload("50-0", payload, redis_client, MagicMock(), AsyncMock())
+    page_query.assert_not_awaited()
+    redis_client.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_negated_location_does_not_expand_recipient_query() -> None:
     redis_client = AsyncMock()
     broadcaster = MagicMock()

@@ -3,7 +3,9 @@ import logging
 import os
 import random
 import signal
+from datetime import UTC
 from pathlib import Path
+from typing import cast
 
 from pyrogram import Client, filters  # type: ignore[attr-defined]
 from pyrogram.types import Message
@@ -21,6 +23,7 @@ from alert_bot_project.core_shared.metrics import (
     start_metrics_server,
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
+from alert_bot_project.scraper.catchup import HistoryClient, catch_up_channel
 from alert_bot_project.scraper.outbox import ScraperOutbox
 from alert_bot_project.scraper.publisher import RedisPublisher
 
@@ -59,7 +62,10 @@ async def handle_channel_post(client: Client, message: Message) -> None:
     SCRAPER_MESSAGES.inc()
 
     try:
-        alert_payload = AlertMessage(message_id=message.id, chat_id=message.chat.id, raw_text=raw_text)
+        source_time = message.date.replace(tzinfo=UTC) if message.date.tzinfo is None else message.date.astimezone(UTC)
+        alert_payload = AlertMessage(
+            message_id=message.id, chat_id=message.chat.id, raw_text=raw_text, timestamp=source_time
+        )
     except Exception:
         logger.exception("Payload validation failed for message ID: %s, skipping", message.id)
         return
@@ -113,6 +119,23 @@ async def replay_outbox() -> None:
             await asyncio.sleep(5)
 
 
+async def catchup_loop() -> None:
+    while not shutdown_event.is_set():
+        try:
+            recovered = await catch_up_channel(cast(HistoryClient, app), outbox, config.GROUP_ID)
+            if recovered:
+                logger.info("Persisted %d source history posts for outbox replay", recovered)
+            await asyncio.wait_for(shutdown_event.wait(), timeout=30)
+        except TimeoutError:
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            SCRAPER_ERRORS.inc()
+            logger.exception("Source history catch-up failed; checkpoint remains unchanged")
+            await asyncio.sleep(5)
+
+
 async def expire_legacy_source_markers() -> None:
     while not shutdown_event.is_set():
         try:
@@ -156,13 +179,15 @@ async def main() -> None:
     logger.info("Starting Pyrogram client infrastructure tracking layer...")
     await app.start()
     replay_task = asyncio.create_task(replay_outbox())
+    catchup_task = asyncio.create_task(catchup_loop())
     marker_cleanup_task = asyncio.create_task(expire_legacy_source_markers())
     logger.info("Scraper background subsystem engine online.")
 
     await shutdown_event.wait()
     replay_task.cancel()
+    catchup_task.cancel()
     marker_cleanup_task.cancel()
-    await asyncio.gather(replay_task, marker_cleanup_task, return_exceptions=True)
+    await asyncio.gather(replay_task, catchup_task, marker_cleanup_task, return_exceptions=True)
     logger.info("Subsystem execution terminated.")
 
 

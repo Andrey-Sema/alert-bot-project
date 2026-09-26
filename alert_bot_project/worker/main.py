@@ -425,6 +425,23 @@ async def process_single_stream_payload(
         analysis = TextProcessor.parse_message(signal.positive_text)
         normalized_text = TextProcessor.normalize(signal.positive_text)
 
+        # History recovery can publish an older threat after a newer clear.
+        # Suppress the first delivery as well as the delayed stages in that case.
+        global_clear_id = await redis_client.get(f"threat:clear_id:{alert_data.chat_id}")
+        if global_clear_id is not None and int(global_clear_id) > alert_data.message_id:
+            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+            return
+        locations = analysis["locations"]
+        if locations:
+            scoped_ids = await redis_client.mget(
+                *[f"threat:clear_id:{alert_data.chat_id}:{location}" for location in locations]
+            )
+            if len(scoped_ids) == len(locations) and all(
+                clear_id is not None and int(clear_id) > alert_data.message_id for clear_id in scoped_ids
+            ):
+                await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+                return
+
         matched_custom = await trigger_matcher.get_matches(normalized_text, redis_client)
         official_alarm_active = await check_official_air_alarm(redis_client)
 
