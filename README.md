@@ -310,6 +310,8 @@ open http://localhost:3000  # admin / $GRAFANA_PASSWORD
 
 ```dotenv
 # ─── Telegram ────────────────────────────────────────────────────────────────
+# Required independent key; generate with secrets.token_hex(32), preferably use LOG_PSEUDONYM_KEY_FILE
+LOG_PSEUDONYM_KEY=REPLACE_WITH_RANDOM_64_HEX_CHARACTERS
 BOT_TOKEN=1234567890:ABCdefGhIJKlmNoPQRsTUVwXyZ     # Токен від @BotFather
 ADMIN_CHAT_ID=987654321                              # Ваш Telegram ID для Alertmanager
 API_ID=1234567                                       # API ID з my.telegram.org
@@ -619,3 +621,5 @@ alert-bot-project/
 **[⬆ Повернутися нагору](#️-odesaalert-bot)**
 
 </div>
+
+Порядок включения обязательного независимого ключа логов и secret-файлов: [docs/secret_hardening.md](docs/secret_hardening.md).

@@ -70,6 +70,7 @@ jobs:
         GROUP_ID: "-100123456"
         API_ID: "123456"
         API_HASH: "fake_hash"
+        LOG_PSEUDONYM_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
         MIGRATION_LOCAL_TEST: "1"
         REDIS_URL: "redis://localhost:6379/0"
