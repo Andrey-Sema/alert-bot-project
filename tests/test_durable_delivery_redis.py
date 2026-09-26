@@ -44,6 +44,49 @@ async def _redis() -> Redis:
 
 
 @pytest.mark.asyncio
+async def test_muted_second_stage_terminates_third_without_requeue() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    event_id = f"test:skipped:{suffix}"
+    user_id = 777
+    broadcaster = Broadcaster(AsyncMock(), client)
+    broadcaster.delivery_stream_name = f"test:delivery:{suffix}"
+    broadcaster.delayed_queue_key = f"test:delayed:{suffix}"
+    keys = [
+        broadcaster.delivery_stream_name,
+        broadcaster.delayed_queue_key,
+        *[f"delivery:stage:{event_id}:{step}" for step in (1, 2, 3)],
+    ]
+    try:
+        await broadcaster.ensure_delivery_group()
+        await client.set(keys[2], "sent", ex=60)
+        for step in (2, 3):
+            await client.xadd(
+                broadcaster.delivery_stream_name,
+                {"payload": json.dumps({"event_id": event_id, "step": step, "chat_id": user_id, "text": "repeat"})},
+            )
+        incoming = await client.xreadgroup(
+            broadcaster.delivery_group_name, "test", {broadcaster.delivery_stream_name: ">"}
+        )
+        with (
+            patch.object(broadcaster, "_is_night", return_value=True),
+            patch.object(broadcaster, "_db_mute_active", new=AsyncMock(return_value=True)),
+        ):
+            for message_id, data in incoming[0][1]:
+                await broadcaster._deliver_one(message_id, data)
+        assert await client.get(keys[3]) == "skipped"
+        assert await client.get(keys[4]) == "skipped"
+        assert (await client.xpending(broadcaster.delivery_stream_name, broadcaster.delivery_group_name))[
+            "pending"
+        ] == 0
+        assert await client.zcard(broadcaster.delayed_queue_key) == 0
+        broadcaster.bot.send_message.assert_not_awaited()
+    finally:
+        await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 @settings(max_examples=12, deadline=None)
 @given(recipients=st.integers(min_value=1, max_value=125))
 async def test_fanout_is_idempotent_and_delayed_pop_preserves_every_job(recipients: int) -> None:
