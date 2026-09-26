@@ -47,10 +47,10 @@ async def test_upgrade_adopts_legacy_schema_and_protects_data_api(tmp_path: Path
 
         await _alembic("upgrade", "head")
         database_file = tmp_path / "database_url"
-        database_file.write_text(os.environ["DATABASE_URL"] + "\n", encoding="utf-8")
+        database_file.write_text(os.environ["MIGRATION_DATABASE_URL"] + "\n", encoding="utf-8")
         file_only_env = dict(os.environ)
-        file_only_env.pop("DATABASE_URL")
-        file_only_env["DATABASE_URL_FILE"] = str(database_file)
+        file_only_env.pop("MIGRATION_DATABASE_URL")
+        file_only_env["MIGRATION_DATABASE_URL_FILE"] = str(database_file)
         await _alembic("current", env=file_only_env)
         assert await connection.fetchval("SELECT count(*) FROM user_settings WHERE user_id = 123") == 1
         assert await connection.fetchval("SELECT count(*) FROM user_triggers WHERE trigger_word = 'center'") == 1

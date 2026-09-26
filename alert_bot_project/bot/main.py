@@ -8,6 +8,8 @@ from alert_bot_project.bot.middlewares.throttling import ThrottlingMiddleware
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import start_metrics_server
+from alert_bot_project.database.engine import AsyncSessionLocal
+from alert_bot_project.database.privileges import verify_runtime_privileges
 
 setup_logging("tg_bot_ui")
 logger = logging.getLogger("bot.main")
@@ -15,6 +17,10 @@ logger = logging.getLogger("bot.main")
 
 async def main() -> None:
     logger.info("Starting Bot UI subsystem initialization sequence...")
+    if config.SERVICE_ROLE != "bot_ui":
+        raise RuntimeError("Bot UI requires SERVICE_ROLE=bot_ui")
+    async with AsyncSessionLocal() as session:
+        await verify_runtime_privileges(session, "bot_ui")
 
     # Старт сервера метрик (если порт занят, внутри сработает Fail-Fast sys.exit(1))
     start_metrics_server(config.METRICS_PORT_BOT)

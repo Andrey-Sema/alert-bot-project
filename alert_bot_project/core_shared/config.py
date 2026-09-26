@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -8,21 +9,35 @@ from alert_bot_project.core_shared.secrets import SECRET_NAMES, load_secret
 
 
 class Settings(BaseSettings):
+    SERVICE_ROLE: Literal["development", "worker", "bot_ui", "scraper", "migrator"] = "development"
+
     @model_validator(mode="before")
     @classmethod
     def load_secret_files(cls, values: dict[str, object]) -> dict[str, object]:
+        service = values.get("SERVICE_ROLE", os.getenv("SERVICE_ROLE", "development"))
+        if service not in ("development", "migrator") and (
+            values.get("MIGRATION_DATABASE_URL") or os.getenv("MIGRATION_DATABASE_URL_FILE") is not None
+        ):
+            raise ValueError("Migration credentials must not be supplied to runtime services")
+        forbidden_files: tuple[str, ...] = ()
+        if service in ("worker", "bot_ui", "migrator"):
+            forbidden_files += ("API_HASH", "PYROGRAM_SESSION_STRING")
+        if service in ("scraper", "migrator"):
+            forbidden_files += ("DATABASE_URL",)
+        if any(os.getenv(f"{name}_FILE") is not None for name in forbidden_files):
+            raise ValueError("Unrelated secret files must not be supplied to this service")
         for name in SECRET_NAMES:
             if os.getenv(f"{name}_FILE") is not None:
                 values[name] = load_secret(name, max_bytes=16384 if name == "PYROGRAM_SESSION_STRING" else 4096)
         return values
 
     # Telegram Bot Settings
-    BOT_TOKEN: str = Field(..., repr=False, description="Official UI bot token obtained from BotFather")
-    GROUP_ID: int = Field(..., description="Target channel or group ID to parse threat monitoring data from")
+    BOT_TOKEN: str = Field("", repr=False, description="Official UI bot token obtained from BotFather")
+    GROUP_ID: int = Field(0, description="Target channel or group ID to parse threat monitoring data from")
 
     # Userbot (Pyrogram) Settings
-    API_ID: int = Field(..., description="API ID from my.telegram.org")
-    API_HASH: str = Field(..., repr=False, description="API Hash from my.telegram.org")
+    API_ID: int = Field(0, description="API ID from my.telegram.org")
+    API_HASH: str = Field("", repr=False, description="API Hash from my.telegram.org")
 
     LOG_PSEUDONYM_KEY: str = Field(..., repr=False, description="Independent random 32-byte key as 64 hex characters")
     PYROGRAM_SESSION_STRING: str = Field("", repr=False, max_length=16384)
@@ -50,8 +65,26 @@ class Settings(BaseSettings):
         return self
 
     # Infrastructure Settings (Supabase & Redis)
-    DATABASE_URL: str = Field(..., repr=False, description="Connection string for PostgreSQL / Supabase")
+    DATABASE_URL: str = Field("", repr=False, description="Runtime PostgreSQL connection string")
+    MIGRATION_DATABASE_URL: str = Field("", repr=False, description="Migration-only PostgreSQL connection string")
     REDIS_URL: str = Field("redis://localhost:6379/0", repr=False, description="Connection string for Redis instance")
+
+    @model_validator(mode="after")
+    def require_service_credentials(self) -> "Settings":
+        required = {
+            "development": ("BOT_TOKEN", "GROUP_ID", "API_ID", "API_HASH", "DATABASE_URL"),
+            "worker": ("BOT_TOKEN", "DATABASE_URL"),
+            "bot_ui": ("BOT_TOKEN", "DATABASE_URL"),
+            "scraper": ("GROUP_ID", "API_ID", "API_HASH"),
+            "migrator": ("MIGRATION_DATABASE_URL",),
+        }[self.SERVICE_ROLE]
+        if any(not getattr(self, name) for name in required):
+            raise ValueError("Required service credentials are missing")
+        if self.SERVICE_ROLE in ("scraper", "migrator") and self.DATABASE_URL:
+            raise ValueError("Runtime DATABASE_URL must not be supplied to scraper/migrator")
+        if self.SERVICE_ROLE in ("worker", "bot_ui", "migrator") and (self.API_HASH or self.PYROGRAM_SESSION_STRING):
+            raise ValueError("Scraper credentials must not be supplied to this service")
+        return self
 
     @field_validator("REDIS_URL")
     @classmethod
