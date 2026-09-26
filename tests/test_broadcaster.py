@@ -148,7 +148,8 @@ async def test_clear_after_source_cancels_delayed_stage(mock_bot: AsyncMock, moc
     await broadcaster._deliver_one("123-0", {"payload": payload})
     mock_redis.get.assert_any_await("threat:clear_id:-100")
     mock_bot.send_message.assert_not_awaited()
-    mock_redis.xack.assert_awaited_once_with("delivery_stream", "delivery_workers", "123-0")
+    mock_redis.pipeline.return_value.set.assert_called_once_with("delivery:stage:-100:42:777:2", "skipped", ex=604800)
+    mock_redis.pipeline.return_value.xack.assert_called_once_with("delivery_stream", "delivery_workers", "123-0")
 
 
 @pytest.mark.asyncio
@@ -169,7 +170,7 @@ async def test_scoped_clear_cancels_only_matching_location(mock_bot: AsyncMock, 
     await broadcaster._deliver_one("123-0", {"payload": payload})
     mock_redis.mget.assert_awaited_once_with("threat:clear_id:-100:center")
     mock_bot.send_message.assert_not_awaited()
-    mock_redis.xack.assert_awaited_once()
+    mock_redis.pipeline.return_value.xack.assert_called_once()
 
 
 @pytest.mark.asyncio

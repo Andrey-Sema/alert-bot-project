@@ -106,15 +106,14 @@ class UkraineAlarmClient:
         """
         session = await self._ensure_session()
         url = f"/api/v3{path}"
-        async with session.get(url) as resp:
+        async with session.get(url, allow_redirects=False) as resp:
             if resp.status == 429:
                 retry_after = int(resp.headers.get("Retry-After", "5") or "5")
                 raise UkraineAlarmError(f"HTTP 429 rate limited, retry-after={retry_after}")
             if resp.status == 401 or resp.status == 403:
                 raise UkraineAlarmError(f"HTTP {resp.status}: невірний або відкликаний API-ключ")
             if resp.status != 200:
-                body = (await resp.text())[:200]
-                raise UkraineAlarmError(f"HTTP {resp.status} on {path}: {body}")
+                raise UkraineAlarmError(f"HTTP {resp.status} on {path}")
             return await resp.json()
 
     async def get_status_index(self) -> int:
@@ -122,8 +121,10 @@ class UkraineAlarmClient:
         data = await self._get("/alerts/status")
         # API інколи віддає {"lastActionIndex": N}
         if isinstance(data, dict):
-            return int(data.get("lastActionIndex", data.get("actionIndex", 0)) or 0)
-        return 0
+            index = data.get("lastActionIndex", data.get("actionIndex"))
+            if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+                return index
+        raise UkraineAlarmError("Invalid status index response")
 
     async def get_regions(self) -> list[dict[str, Any]]:
         """Повертає плаский список областей верхнього рівня (states)."""
@@ -138,8 +139,14 @@ class UkraineAlarmClient:
         """Активні тривоги в межах регіону (для області — включно з громадами)."""
         data = await self._get(f"/alerts/{region_id}")
         if isinstance(data, list):
+            for region in data:
+                if not isinstance(region, dict) or not isinstance(region.get("activeAlerts"), list):
+                    raise UkraineAlarmError("Invalid region alerts response")
+                for alert in region["activeAlerts"]:
+                    if not isinstance(alert, dict) or not isinstance(alert.get("type"), str) or not alert["type"]:
+                        raise UkraineAlarmError("Invalid alert type response")
             return data
-        return []
+        raise UkraineAlarmError("Invalid region alerts response")
 
     async def resolve_region_id(self, name_substr: str) -> str | None:
         """
@@ -240,9 +247,8 @@ class AlarmStatePoller:
             or index != self._last_index
             or (time.monotonic() - self._last_success_ts) >= (self._state_ttl / 2)
         )
-        if not need_full:
-            # Стан не змінився — просто продовжуємо TTL, щоб ключ не протух
-            await self.redis.expire(OFFICIAL_ALARM_KEY, self._state_ttl)
+        # Refresh only an existing cached value; a missing key needs a full poll.
+        if not need_full and await self.redis.expire(OFFICIAL_ALARM_KEY, self._state_ttl):
             return
 
         assert self.client is not None  # гарантовано run(): цей метод викликається лише з циклу опитування

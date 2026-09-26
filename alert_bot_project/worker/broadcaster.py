@@ -240,7 +240,12 @@ class Broadcaster:
         reservation: DeliveryReservation | None = None,
     ) -> DeliveryOutcome:
         peer_hash = self._hash_id(chat_id)
-        await self.rate_limiter.acquire(chat_id, repeat=repeat)
+        try:
+            await asyncio.wait_for(
+                self.rate_limiter.acquire(chat_id, repeat=repeat), timeout=config.TELEGRAM_MAX_RETRY_SECONDS
+            )
+        except TimeoutError:
+            return DeliveryOutcome("retry", "rate_limit_timeout")
         if reservation is not None:
             begin = self.redis.register_script(BEGIN_DELIVERY_LUA)
             reservation.reserved = bool(
@@ -365,12 +370,17 @@ class Broadcaster:
                         )
                     )
                 if (clear_id is not None and int(clear_id) > int(source_message_id)) or scoped_clear:
-                    await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                    await self._skip_stage(message_id, event_id, step)
                     DELIVERY_OUTCOMES.labels(stage=str(step), outcome="cancelled_clear").inc()
                     return
             prior_state = await self.redis.get(f"delivery:stage:{event_id}:{step - 1}")
+            if prior_state == "skipped":
+                await self._skip_stage(message_id, event_id, step)
+                return
             if prior_state == "failed":
-                await self._move_to_dlq(message_id, raw_payload, "previous stage failed")
+                await self._move_to_dlq(
+                    message_id, raw_payload, "previous stage failed", f"delivery:stage:{event_id}:{step}"
+                )
                 return
             if prior_state != "sent":
                 # Requeue the delayed stage until the previous stage succeeds.
@@ -383,7 +393,7 @@ class Broadcaster:
         # Acknowledgement or daytime cutoff intentionally suppresses a delayed
         # stage. The first stage was already selected during the night.
         if step > 1 and (not self._is_night() or await self._db_mute_active(chat_id)):
-            await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+            await self._skip_stage(message_id, event_id, step)
             return
 
         if await self.redis.exists(f"telegram:blocked:{chat_id}"):
@@ -436,6 +446,12 @@ class Broadcaster:
                 end = self.redis.register_script(END_DELIVERY_LUA)
                 await end(keys=[f"privacy:inflight:{chat_id}"])
 
+    async def _skip_stage(self, message_id: str, event_id: Any, step: int) -> None:
+        pipe = self.redis.pipeline(transaction=True)
+        pipe.set(f"delivery:stage:{event_id}:{step}", "skipped", ex=604800)
+        pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+        await pipe.execute()
+
     async def process_delivery_stream(self, worker_index: int) -> None:
         """Consume new jobs and reclaim jobs left pending by failed processes."""
         consumer = f"delivery_{socket.gethostname()}_{os.getpid()}_{worker_index}"
@@ -446,11 +462,11 @@ class Broadcaster:
                     self.delivery_stream_name,
                     self.delivery_group_name,
                     consumer,
-                    # send_single_message can wait up to 180s on flood control.
-                    # Do not let another process steal a job while it is sending.
-                    min_idle_time=max(240000, (config.TELEGRAM_MAX_RETRY_SECONDS + 60) * 1000),
+                    # Reserve one job at a time; its lease covers rate wait plus
+                    # the 120s Telegram request and a 60s completion margin.
+                    min_idle_time=(config.TELEGRAM_MAX_RETRY_SECONDS + 180) * 1000,
                     start_id=next_start_id,
-                    count=20,
+                    count=1,
                 )
                 next_start_id = claimed[0]
                 for message_id, data in claimed[1]:
@@ -459,7 +475,7 @@ class Broadcaster:
                     self.delivery_group_name,
                     consumer,
                     {self.delivery_stream_name: ">"},
-                    count=20,
+                    count=1,
                     block=1000,
                 )
                 for _stream, messages in incoming:

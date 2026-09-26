@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 
 class AlertMessage(BaseModel):
@@ -13,6 +13,13 @@ class AlertMessage(BaseModel):
     raw_text: str = Field(..., max_length=4096, description="Raw text message content")
 
     # Гарантирует генерацию корректного UTC-времени строго в момент создания инстанса
-    timestamp: datetime = Field(
+    timestamp: AwareDatetime = Field(
         default_factory=lambda: datetime.now(UTC), description="UTC time when the message was captured"
     )
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_source_time(cls, value: datetime) -> datetime:
+        if (value - datetime.now(UTC)).total_seconds() > 300:
+            raise ValueError("Source timestamp exceeds allowed clock skew")
+        return value.astimezone(UTC)

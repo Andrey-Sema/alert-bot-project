@@ -67,7 +67,7 @@ class Settings(BaseSettings):
 
     # Fix: Removed magic numbers by adding configurable network threshold parameters
     TELEGRAM_MAX_RETRY_SECONDS: int = Field(
-        180, description="Maximum total allowed cumulative sleep duration for Telegram 429 backoff"
+        180, ge=1, le=180, description="Maximum wait for a shared Telegram rate slot"
     )
 
     # ✅ ФИКС: Модель-валидатор для атомарной проверки уникальности портов на этапе инициализации контейнера
