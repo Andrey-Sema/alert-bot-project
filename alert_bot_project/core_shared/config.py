@@ -4,30 +4,54 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from alert_bot_project.core_shared.secrets import load_secret
+from alert_bot_project.core_shared.secrets import SECRET_NAMES, load_secret
 
 
 class Settings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def load_secret_files(cls, values: dict[str, object]) -> dict[str, object]:
-        for name in ("BOT_TOKEN", "API_HASH", "DATABASE_URL", "REDIS_URL", "UKRAINEALARM_API_KEY"):
-            path = os.getenv(f"{name}_FILE")
-            if path:
-                values[name] = load_secret(name)
+        for name in SECRET_NAMES:
+            if os.getenv(f"{name}_FILE") is not None:
+                values[name] = load_secret(name, max_bytes=16384 if name == "PYROGRAM_SESSION_STRING" else 4096)
         return values
 
     # Telegram Bot Settings
-    BOT_TOKEN: str = Field(..., description="Official UI bot token obtained from BotFather")
+    BOT_TOKEN: str = Field(..., repr=False, description="Official UI bot token obtained from BotFather")
     GROUP_ID: int = Field(..., description="Target channel or group ID to parse threat monitoring data from")
 
     # Userbot (Pyrogram) Settings
     API_ID: int = Field(..., description="API ID from my.telegram.org")
-    API_HASH: str = Field(..., description="API Hash from my.telegram.org")
+    API_HASH: str = Field(..., repr=False, description="API Hash from my.telegram.org")
+
+    LOG_PSEUDONYM_KEY: str = Field(..., repr=False, description="Independent random 32-byte key as 64 hex characters")
+    PYROGRAM_SESSION_STRING: str = Field("", repr=False, max_length=16384)
+
+    @field_validator("PYROGRAM_SESSION_STRING")
+    @classmethod
+    def bound_session_bytes(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 16384:
+            raise ValueError("PYROGRAM_SESSION_STRING exceeds 16384 bytes")
+        return value
+
+    @field_validator("LOG_PSEUDONYM_KEY")
+    @classmethod
+    def validate_log_key(cls, value: str) -> str:
+        if len(value) != 64 or any(char not in "0123456789abcdefABCDEF" for char in value):
+            raise ValueError("LOG_PSEUDONYM_KEY must contain exactly 64 hexadecimal characters")
+        if len(set(value.lower())) == 1:
+            raise ValueError("LOG_PSEUDONYM_KEY must be independently randomly generated")
+        return value.lower()
+
+    @model_validator(mode="after")
+    def separate_log_key(self) -> "Settings":
+        if self.LOG_PSEUDONYM_KEY in (self.API_HASH.lower(), self.BOT_TOKEN.lower()):
+            raise ValueError("LOG_PSEUDONYM_KEY cannot reuse Telegram credentials")
+        return self
 
     # Infrastructure Settings (Supabase & Redis)
-    DATABASE_URL: str = Field(..., description="Connection string for PostgreSQL / Supabase")
-    REDIS_URL: str = Field("redis://localhost:6379/0", description="Connection string for Redis instance")
+    DATABASE_URL: str = Field(..., repr=False, description="Connection string for PostgreSQL / Supabase")
+    REDIS_URL: str = Field("redis://localhost:6379/0", repr=False, description="Connection string for Redis instance")
 
     @field_validator("REDIS_URL")
     @classmethod
@@ -51,7 +75,7 @@ class Settings(BaseSettings):
     NIGHT_START_HOUR: int = Field(22, ge=0, le=23, description="Start hour for quiet hours/night mode status")
     NIGHT_END_HOUR: int = Field(7, ge=0, le=23, description="End hour for quiet hours/night mode status")
 
-    UKRAINEALARM_API_KEY: str = Field("", description="API-ключ від api.ukrainealarm.com")
+    UKRAINEALARM_API_KEY: str = Field("", repr=False, description="API-ключ від api.ukrainealarm.com")
     UKRAINEALARM_REGION_ID: str | None = Field(
         None, description="ID Одеської області; якщо None — резолвиться автоматично за назвою"
     )
@@ -81,7 +105,9 @@ class Settings(BaseSettings):
             )
         return self
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
 
 
 config = Settings()

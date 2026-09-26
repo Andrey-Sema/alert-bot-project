@@ -136,7 +136,7 @@ class Broadcaster:
         self.redis = redis_client
         self.workers_count = workers_count
         self.delayed_queue_key = "delayed_alerts_queue"
-        self._salt = config.API_HASH.encode()
+        self._salt = bytes.fromhex(config.LOG_PSEUDONYM_KEY)
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
         self._night_end = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
         self._tz = ZoneInfo(KYIV_TZ)

@@ -4,7 +4,6 @@ import os
 import random
 import signal
 from datetime import UTC
-from pathlib import Path
 from typing import cast
 
 from pyrogram import Client, filters  # type: ignore[attr-defined]
@@ -35,13 +34,7 @@ logger = logging.getLogger("scraper.main")
 SESSION_DIR = "/data/session"
 
 # Поддержка безопасных In-Memory сессий для деплоя
-session_str = os.getenv("PYROGRAM_SESSION_STRING")
-session_file = os.getenv("PYROGRAM_SESSION_STRING_FILE")
-if session_file:
-    path = Path(session_file)
-    if path.stat().st_size > 16384:
-        raise ValueError("PYROGRAM_SESSION_STRING_FILE exceeds 16384 bytes")
-    session_str = path.read_text(encoding="utf-8").strip()
+session_str = config.PYROGRAM_SESSION_STRING
 if session_str:
     app = Client(name="twink_account", session_string=session_str, api_id=config.API_ID, api_hash=config.API_HASH)
 else:
