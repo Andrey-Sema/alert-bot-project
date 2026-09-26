@@ -1,5 +1,7 @@
 """Real Redis checks run in CI; local runs skip when Redis is unavailable."""
 
+import asyncio
+import json
 import os
 import time
 import uuid
@@ -10,10 +12,22 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
 
-from alert_bot_project.scraper.publisher import PUBLISH_ONCE_LUA
-from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, Broadcaster
+from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache, update_custom_trigger_cache
+from alert_bot_project.scraper.publisher import PUBLISH_ONCE_LUA, SOURCE_REPLAY_HORIZON_SECONDS, RedisPublisher
+from alert_bot_project.scripts.capacity_probe import probe_fanout
+from alert_bot_project.services.privacy import (
+    BEGIN_DELIVERY_LUA,
+    END_DELIVERY_LUA,
+    FENCE_DELETION_LUA,
+    delete_user_data,
+    user_privacy_lock,
+)
+from alert_bot_project.worker.broadcaster import POP_MATURE_TASKS_LUA, STORE_DLQ_LUA, Broadcaster
+from alert_bot_project.worker.delivery_lease import DeliveryLease
 from alert_bot_project.worker.main import init_redis_consumer_group
+from alert_bot_project.worker.queue_metrics import delivery_backlog
 from alert_bot_project.worker.rate_limit import ACQUIRE_SLOT_LUA
 from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
 
@@ -28,6 +42,113 @@ async def _redis() -> Redis:
             pytest.fail("CI Redis service is required for delivery integration tests")
         pytest.skip("local Redis is not running")
     return client
+
+
+@pytest.mark.asyncio
+async def test_delivery_heartbeat_prevents_claim_and_fences_forced_new_owner() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    stream, group = f"test:lease:{suffix}", "lease_group"
+    stage = f"test:stage:{suffix}:1"
+    lease = None
+    operation_task = None
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_operation() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    try:
+        await client.xgroup_create(stream, group, id="0-0", mkstream=True)
+        message_id = await client.xadd(stream, {"payload": "test"})
+        await client.xreadgroup(group, "original", {stream: ">"}, count=1)
+        lease = DeliveryLease(client, stream, group, "original", message_id, stage)
+        lease.interval = 0.01
+        operation_task = asyncio.create_task(lease.run(slow_operation, 5))
+        await asyncio.wait_for(started.wait(), 2)
+        await asyncio.sleep(0.2)
+        claimed = await client.xautoclaim(stream, group, "other", min_idle_time=100, start_id="0-0", count=1)
+        assert claimed[1] == []
+        # Even a forced transfer must stop the old owner's operation.
+        await client.xclaim(stream, group, "other", min_idle_time=0, message_ids=[message_id])
+        assert not await lease.renew()
+        await asyncio.wait_for(operation_task, 2)
+        assert cancelled.is_set()
+        assert (await client.xpending_range(stream, group, "-", "+", 1))[0]["consumer"] == "other"
+    finally:
+        if operation_task:
+            operation_task.cancel()
+            await asyncio.gather(operation_task, return_exceptions=True)
+        await client.delete(stream, f"delivery:lease:{stage}")
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_event_stage_cannot_reserve_two_delivery_slots() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    stream, group = f"test:lease:{suffix}", "lease_group"
+    stage = f"test:stage:{suffix}:1"
+    try:
+        await client.xgroup_create(stream, group, id="0-0", mkstream=True)
+        first = await client.xadd(stream, {"payload": "same_event"})
+        second = await client.xadd(stream, {"payload": "same_event"})
+        await client.xreadgroup(group, "a", {stream: ">"}, count=1)
+        await client.xreadgroup(group, "b", {stream: ">"}, count=1)
+        a = DeliveryLease(client, stream, group, "a", first, stage)
+        b = DeliveryLease(client, stream, group, "b", second, stage)
+        results = await asyncio.gather(a.renew(), b.renew())
+        assert sorted(results) == [False, True]
+    finally:
+        await client.delete(stream, f"delivery:lease:{stage}")
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_muted_second_stage_terminates_third_without_requeue() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    event_id = f"test:skipped:{suffix}"
+    user_id = 777
+    broadcaster = Broadcaster(AsyncMock(), client)
+    broadcaster.delivery_stream_name = f"test:delivery:{suffix}"
+    broadcaster.delayed_queue_key = f"test:delayed:{suffix}"
+    keys = [
+        broadcaster.delivery_stream_name,
+        broadcaster.delayed_queue_key,
+        *[f"delivery:stage:{event_id}:{step}" for step in (1, 2, 3)],
+    ]
+    try:
+        await broadcaster.ensure_delivery_group()
+        await client.set(keys[2], "sent", ex=60)
+        for step in (2, 3):
+            await client.xadd(
+                broadcaster.delivery_stream_name,
+                {"payload": json.dumps({"event_id": event_id, "step": step, "chat_id": user_id, "text": "repeat"})},
+            )
+        incoming = await client.xreadgroup(
+            broadcaster.delivery_group_name, "test", {broadcaster.delivery_stream_name: ">"}
+        )
+        with (
+            patch.object(broadcaster, "_is_night", return_value=True),
+            patch.object(broadcaster, "_db_mute_active", new=AsyncMock(return_value=True)),
+        ):
+            for message_id, data in incoming[0][1]:
+                await broadcaster._deliver_one(message_id, data)
+        assert await client.get(keys[3]) == "skipped"
+        assert await client.get(keys[4]) == "skipped"
+        assert (await client.xpending(broadcaster.delivery_stream_name, broadcaster.delivery_group_name))[
+            "pending"
+        ] == 0
+        assert await client.zcard(broadcaster.delayed_queue_key) == 0
+        broadcaster.bot.send_message.assert_not_awaited()
+    finally:
+        await client.delete(*keys)
+        await client.aclose()
 
 
 @pytest.mark.asyncio
@@ -47,6 +168,8 @@ async def test_fanout_is_idempotent_and_delayed_pop_preserves_every_job(recipien
 
         assert await client.xlen(broadcaster.delivery_stream_name) == recipients
         assert await client.zcard(broadcaster.delayed_queue_key) == 2 * recipients
+        marker_ttl = await client.ttl("delivery:enqueued:-100:42:1")
+        assert 0 < marker_ttl <= SOURCE_REPLAY_HORIZON_SECONDS
 
         moved = 0
         while True:
@@ -148,6 +271,7 @@ async def test_source_publish_is_idempotent_after_uncertain_result() -> None:
         assert first != 0
         assert second == 0
         assert await client.xlen(stream) == 1
+        assert 0 < await client.ttl(marker) <= SOURCE_REPLAY_HORIZON_SECONDS
     finally:
         await client.delete(marker, stream)
         await client.aclose()
@@ -165,4 +289,226 @@ async def test_shared_rate_slot_limits_global_and_per_chat() -> None:
         assert await client.eval(ACQUIRE_SLOT_LUA, 3, *keys, 0) > 0
     finally:
         await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_privacy_fence_blocks_new_fanout_and_delayed_transfer() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    recipient = 1_000_000_000_000_000 + int(suffix[:8], 16)
+    broadcaster = Broadcaster(AsyncMock(), client)
+    broadcaster.delivery_stream_name = f"test:delivery:{suffix}"
+    broadcaster.delayed_queue_key = f"test:delayed:{suffix}"
+    deleted_key = f"privacy:deleted:{recipient}"
+    generation_key = f"privacy:generation:{recipient}"
+    marker = f"delivery:enqueued:-100:42:{recipient}"
+    try:
+        assert await broadcaster.enqueue_alert(-100, 42, recipient)
+        await client.eval(FENCE_DELETION_LUA, 2, deleted_key, generation_key, "new-generation")
+        assert await client.ttl(deleted_key) == -1
+        assert await client.ttl(generation_key) == -1
+        assert not await broadcaster.enqueue_alert(-100, 43, recipient)
+        assert (
+            await client.eval(
+                POP_MATURE_TASKS_LUA,
+                2,
+                broadcaster.delayed_queue_key,
+                broadcaster.delivery_stream_name,
+                int(time.time()) + 10000,
+                50,
+            )
+            == 2
+        )
+        assert await client.xlen(broadcaster.delivery_stream_name) == 1
+        assert await client.zcard(broadcaster.delayed_queue_key) == 0
+    finally:
+        await client.delete(
+            deleted_key, generation_key, marker, broadcaster.delivery_stream_name, broadcaster.delayed_queue_key
+        )
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deletion_scrubs_only_own_dlq_payload_and_rejects_late_failure() -> None:
+    client = await _redis()
+    user_id = 1_000_000_007_744_332
+    other_id = user_id + 1
+    try:
+        await client.delete(
+            "delivery_stream",
+            "delivery_dead_letter_queue",
+            f"privacy:deleted:{user_id}",
+            f"privacy:generation:{user_id}",
+        )
+        await client.xgroup_create("delivery_stream", "delivery_workers", id="0-0", mkstream=True)
+        await client.xadd(
+            "delivery_dead_letter_queue", {"payload": json.dumps({"chat_id": user_id, "text": "private"})}
+        )
+        await client.xadd("delivery_dead_letter_queue", {"payload": json.dumps({"chat_id": other_id, "text": "keep"})})
+        await delete_user_data(AsyncMock(), client, user_id)
+        remaining = await client.xrange("delivery_dead_letter_queue")
+        assert len(remaining) == 1
+        assert json.loads(remaining[0][1]["payload"])["chat_id"] == other_id
+
+        job = json.dumps({"chat_id": user_id, "recipient_generation": "0", "event_id": "event", "step": 1})
+        message_id = await client.xadd("delivery_stream", {"payload": job})
+        await client.xreadgroup("delivery_workers", "test-worker", {"delivery_stream": ">"}, count=1)
+        await client.eval(
+            STORE_DLQ_LUA,
+            3,
+            "delivery_dead_letter_queue",
+            "delivery_stream",
+            f"delivery:retry:{message_id}",
+            job,
+            "telegram_forbidden",
+            message_id,
+            "delivery_workers",
+            "",
+        )
+        assert await client.xlen("delivery_dead_letter_queue") == 1
+    finally:
+        await client.delete(
+            "delivery_stream",
+            "delivery_dead_letter_queue",
+            f"privacy:deleted:{user_id}",
+            f"privacy:generation:{user_id}",
+            f"privacy:inflight:{user_id}",
+        )
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deletion_fence_waits_for_reserved_delivery() -> None:
+    client = await _redis()
+    user_id = 7744332200
+    deleted_key = f"privacy:deleted:{user_id}"
+    generation_key = f"privacy:generation:{user_id}"
+    inflight_key = f"privacy:inflight:{user_id}"
+    try:
+        await client.delete(deleted_key, generation_key, inflight_key)
+        assert await client.eval(BEGIN_DELIVERY_LUA, 3, deleted_key, generation_key, inflight_key, "0") == 1
+        await client.eval(FENCE_DELETION_LUA, 2, deleted_key, generation_key, "new-generation")
+        assert await client.eval(BEGIN_DELIVERY_LUA, 3, deleted_key, generation_key, inflight_key, "0") == 0
+        assert await client.get(inflight_key) == "1"
+        await client.eval(END_DELIVERY_LUA, 1, inflight_key)
+        assert await client.get(inflight_key) is None
+    finally:
+        await client.delete(deleted_key, generation_key, inflight_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_registration_cannot_overlap_deletion_lock() -> None:
+    client = await _redis()
+    user_id = 1_000_000_007_744_333
+    key = f"privacy:operation:{user_id}"
+    try:
+        async with user_privacy_lock(client, user_id):
+            with pytest.raises(RedisError):
+                async with user_privacy_lock(client, user_id):
+                    pass
+        assert await client.exists(key) == 0
+    finally:
+        await client.delete(key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_delivery_age_ignores_acknowledged_history_but_detects_stuck_job() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    stream = f"test:metrics:{suffix}"
+    group = f"test:metrics-group:{suffix}"
+    old_ms = int((time.time() - 900) * 1000)
+    try:
+        first = await client.xadd(stream, {"payload": "acknowledged"}, id=f"{old_ms}-0")
+        await client.xgroup_create(stream, group, id="0-0")
+        await client.xreadgroup(group, "consumer", {stream: ">"}, count=1)
+        await client.xack(stream, group, first)
+        assert await delivery_backlog(client, stream, group) == (0, 0.0)
+
+        second = await client.xadd(stream, {"payload": "stuck"}, id=f"{old_ms + 1}-0")
+        depth, age = await delivery_backlog(client, stream, group)
+        assert depth == 1
+        assert age > 600
+        await client.xreadgroup(group, "consumer", {stream: ">"}, count=1)
+        depth, age = await delivery_backlog(client, stream, group)
+        assert depth == 1
+        assert age > 600
+        await client.xack(stream, group, second)
+        assert await delivery_backlog(client, stream, group) == (0, 0.0)
+    finally:
+        await client.delete(stream)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_source_markers_gain_ttl_without_shortening_existing_ttl() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    legacy = f"source:published:-100:{suffix}"
+    recent = f"source:published:-101:{suffix}"
+    publisher = RedisPublisher()
+    publisher._redis = client
+    try:
+        await client.set(legacy, "1-0")
+        await client.set(recent, "1-0", ex=60)
+        await publisher.expire_legacy_markers()
+        assert SOURCE_REPLAY_HORIZON_SECONDS - 60 < await client.ttl(legacy) <= SOURCE_REPLAY_HORIZON_SECONDS
+        assert 0 < await client.ttl(recent) <= 60
+    finally:
+        await client.delete(legacy, recent)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@settings(max_examples=8, deadline=None)
+@given(phrases=st.sets(st.text(alphabet="абвгде", min_size=3, max_size=8), max_size=10))
+async def test_trigger_cache_version_changes_only_with_membership(phrases: set[str]) -> None:
+    client = await _redis()
+    keys = ("global_custom_triggers", "global_custom_triggers:version")
+    try:
+        await client.delete(*keys)
+        assert await reconcile_custom_trigger_cache(client, phrases, None) == int(bool(phrases))
+        version = await client.get(keys[1])
+        assert await reconcile_custom_trigger_cache(client, phrases, version) == 0
+        assert await client.get(keys[1]) == version
+        assert await client.smembers(keys[0]) == phrases
+        assert await update_custom_trigger_cache(client, "уникальная_фраза", add=True)
+        assert not await update_custom_trigger_cache(client, "уникальная_фраза", add=True)
+        assert await reconcile_custom_trigger_cache(client, phrases, version) == -1
+    finally:
+        await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("posts_per_minute", [1, 5, 20])
+async def test_synthetic_fanout_accepts_all_jobs(posts_per_minute: int) -> None:
+    client = await _redis()
+    try:
+        result = await probe_fanout(client, recipients=125, posts_per_minute=posts_per_minute)
+        assert result["accepted_loss"] == 0
+        assert result["first_stage_jobs"] == 125 * posts_per_minute
+        assert result["delayed_jobs"] == 250 * posts_per_minute
+        assert result["fanout_p99_seconds"] >= result["fanout_p95_seconds"]
+        assert result["fanout_p99_seconds"] < 5
+        assert result["redis_memory_delta_bytes"] < 64 * 1024 * 1024
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repeat_throttle_does_not_reserve_slot_needed_by_first_alert() -> None:
+    client = await _redis()
+    suffix = uuid.uuid4().hex
+    global_key, first_chat, repeat_chat, repeat_key = [f"probe:rate:{suffix}:{part}" for part in range(4)]
+    try:
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, global_key, repeat_chat, repeat_key, 1) == 0
+        await asyncio.sleep(0.08)
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, global_key, repeat_chat, repeat_key, 1) > 0
+        assert await client.eval(ACQUIRE_SLOT_LUA, 3, global_key, first_chat, repeat_key, 0) == 0
+    finally:
+        await client.delete(global_key, first_chat, repeat_chat, repeat_key)
         await client.aclose()

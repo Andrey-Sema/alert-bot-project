@@ -7,6 +7,7 @@ import time
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
+from alert_bot_project.core_shared.redis_connection import create_service_redis
 from alert_bot_project.core_shared.schemas import AlertMessage
 
 # ============================================================
@@ -44,14 +45,14 @@ VERIFY_POLL_INTERVAL = 2.0
 
 async def build_redis_client(redis_url: str) -> Redis:
     """Создаёт клиент Redis с явной проверкой доступности брокера."""
-    client: Redis = Redis.from_url(redis_url, decode_responses=True)
+    client = create_service_redis(redis_url)
     try:
         await client.ping()
-    except (RedisConnectionError, OSError) as exc:
+    except (RedisConnectionError, OSError):
+        await client.aclose()
         print(
-            f"\n❌ FATAL: Не удалось подключиться к Redis по адресу: {redis_url}\n"
-            f"   Причина: {exc}\n"
-            f"   Проверьте, что контейнер redis запущен (docker compose ps) и REDIS_URL задан корректно в .env\n"
+            "\n❌ FATAL: Не удалось подключиться к Redis.\n"
+            "   Проверьте доступность брокера и TLS trust store; секреты подключения не выводятся.\n"
         )
         sys.exit(1)
     return client

@@ -11,7 +11,7 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 
-from alert_bot_project.worker.broadcaster import Broadcaster, DeliveryOutcome
+from alert_bot_project.worker.broadcaster import Broadcaster, DeliveryOutcome, DeliveryReservation
 
 
 @pytest.fixture
@@ -42,12 +42,19 @@ async def test_enqueue_all_stages_with_stable_recipient_identity(mock_bot: Async
         assert await broadcaster.enqueue_alert(-100, 42, 777)
     keys = mock_redis.register_script.return_value.call_args.kwargs["keys"]
     args = mock_redis.register_script.return_value.call_args.kwargs["args"]
-    assert keys == ["delivery:enqueued:-100:42:777", "delivery_stream", "delayed_alerts_queue"]
+    assert keys == [
+        "delivery:enqueued:-100:42:777",
+        "delivery_stream",
+        "delayed_alerts_queue",
+        "privacy:deleted:777",
+        "privacy:generation:777",
+    ]
     assert json.loads(args[0])["step"] == 1
     assert json.loads(args[2])["step"] == 2
     assert json.loads(args[4])["step"] == 3
     assert args[1] < args[3]
     assert args[5] == 0
+    assert args[6] == "0"
 
 
 @pytest.mark.asyncio
@@ -64,6 +71,18 @@ async def test_send_single_message_handles_flood_control_retry(
     assert await broadcaster.send_single_message(777, "Тест") == DeliveryOutcome("retry", "telegram_429")
     assert mock_bot.send_message.call_count == 1
     mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deletion_fence_rejects_send_after_rate_wait(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    broadcaster.rate_limiter.acquire = AsyncMock()
+    mock_redis.register_script.return_value = AsyncMock(return_value=0)
+    reservation = DeliveryReservation("old-generation")
+    outcome = await broadcaster.send_single_message(777, "alert", reservation=reservation)
+    assert outcome == DeliveryOutcome("cancelled", "privacy_deleted")
+    assert not reservation.reserved
+    mock_bot.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -129,7 +148,56 @@ async def test_clear_after_source_cancels_delayed_stage(mock_bot: AsyncMock, moc
     await broadcaster._deliver_one("123-0", {"payload": payload})
     mock_redis.get.assert_any_await("threat:clear_id:-100")
     mock_bot.send_message.assert_not_awaited()
-    mock_redis.xack.assert_awaited_once_with("delivery_stream", "delivery_workers", "123-0")
+    mock_redis.pipeline.return_value.set.assert_called_once_with("delivery:stage:-100:42:777:2", "skipped", ex=604800)
+    mock_redis.pipeline.return_value.xack.assert_called_once_with("delivery_stream", "delivery_workers", "123-0")
+
+
+@pytest.mark.asyncio
+async def test_scoped_clear_cancels_only_matching_location(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    mock_redis.mget = AsyncMock(return_value=["43"])
+    payload = json.dumps(
+        {
+            "event_id": "-100:42:777",
+            "chat_id": 777,
+            "step": 2,
+            "text": "repeat",
+            "source_chat_id": -100,
+            "source_message_id": 42,
+            "source_locations": ["center"],
+        }
+    )
+    await broadcaster._deliver_one("123-0", {"payload": payload})
+    mock_redis.mget.assert_awaited_once_with("threat:clear_id:-100:center")
+    mock_bot.send_message.assert_not_awaited()
+    mock_redis.pipeline.return_value.xack.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_one_clear_does_not_cancel_multilocation_reminder(mock_bot: AsyncMock, mock_redis: MagicMock) -> None:
+    broadcaster = Broadcaster(mock_bot, mock_redis)
+    mock_redis.mget = AsyncMock(return_value=["43", None])
+    mock_redis.get.side_effect = lambda key: "sent" if key == "delivery:stage:-100:42:777:1" else None
+    payload = json.dumps(
+        {
+            "event_id": "-100:42:777",
+            "chat_id": 777,
+            "step": 2,
+            "text": "repeat",
+            "source_chat_id": -100,
+            "source_message_id": 42,
+            "source_locations": ["center", "peresyp"],
+        }
+    )
+    with (
+        patch.object(broadcaster, "_is_night", return_value=True),
+        patch.object(broadcaster, "_db_mute_active", return_value=False),
+        patch.object(broadcaster, "send_single_message", return_value=DeliveryOutcome("sent")),
+        patch.object(broadcaster, "_record_delivered", return_value=None),
+    ):
+        await broadcaster._deliver_one("123-0", {"payload": payload})
+    mock_redis.mget.assert_awaited_once_with("threat:clear_id:-100:center", "threat:clear_id:-100:peresyp")
+    mock_redis.pipeline.return_value.xack.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -197,9 +265,10 @@ async def test_forbidden_marks_recipient_for_reonboarding(mock_bot: AsyncMock, m
     mock_redis.set = AsyncMock()
     mock_bot.send_message.side_effect = TelegramForbiddenError(method=MagicMock(), message="blocked")
     payload = json.dumps({"event_id": "event", "chat_id": 777, "step": 1, "text": "alert"})
-    await broadcaster._deliver_one("123-0", {"payload": payload})
+    with patch.object(broadcaster, "_move_to_dlq", new_callable=AsyncMock) as move_to_dlq:
+        await broadcaster._deliver_one("123-0", {"payload": payload})
     mock_redis.set.assert_awaited_once_with("telegram:blocked:777", "re_onboarding_required")
-    mock_redis.pipeline.return_value.xadd.assert_called_once()
+    move_to_dlq.assert_awaited_once()
 
 
 @pytest.mark.asyncio

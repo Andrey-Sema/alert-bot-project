@@ -9,6 +9,7 @@ import logging
 import os
 import socket
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -23,6 +24,7 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 from aiogram.types import InlineKeyboardMarkup
+from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 from sqlalchemy import select
@@ -37,6 +39,7 @@ from alert_bot_project.core_shared.constants import (
     ALERT_SECOND,
     ALERT_THIRD,
     KYIV_TZ,
+    SOURCE_REPLAY_HORIZON_SECONDS,
 )
 from alert_bot_project.core_shared.metrics import (
     DELIVERY_LATENCY,
@@ -47,19 +50,24 @@ from alert_bot_project.core_shared.metrics import (
 from alert_bot_project.database.activity import record_activity
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserSettings
+from alert_bot_project.services.privacy import BEGIN_DELIVERY_LUA, END_DELIVERY_LUA
+from alert_bot_project.worker.delivery_contract import DeliveryJob, delivery_content, parse_delivery_job
+from alert_bot_project.worker.delivery_lease import DeliveryLease
 from alert_bot_project.worker.rate_limit import TelegramRateLimiter
 
 logger = logging.getLogger("worker.broadcaster")
 
 # The marker, first delivery job and both delayed jobs are one Redis operation.
 # Replaying a partially-fanned-out source post cannot duplicate recipients.
-ENQUEUE_ALERT_LUA = """
+ENQUEUE_ALERT_LUA = f"""
+if redis.call('EXISTS', KEYS[4]) == 1 then return 0 end
+if (redis.call('GET', KEYS[5]) or '0') ~= ARGV[7] then return 0 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
     redis.call('XADD', KEYS[2], '*', 'payload', ARGV[1])
     if ARGV[6] == '0' then
         redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3], ARGV[4], ARGV[5])
     end
-    redis.call('SET', KEYS[1], '1', 'EX', 604800)
+    redis.call('SET', KEYS[1], '1', 'EX', {SOURCE_REPLAY_HORIZON_SECONDS})
     return 1
 end
 return 0
@@ -70,10 +78,37 @@ return 0
 POP_MATURE_TASKS_LUA = """
 local elements = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])
 for _, element in ipairs(elements) do
-    redis.call('XADD', KEYS[2], '*', 'payload', element)
+    local ok, job = pcall(cjson.decode, element)
+    local allowed = true
+    if ok and type(job) == 'table' and job.chat_id then
+        local id = type(job.chat_id) == 'number' and string.format('%.0f', job.chat_id) or job.chat_id
+        local generation = tostring(job.recipient_generation or '0')
+        allowed = redis.call('EXISTS', 'privacy:deleted:' .. id) == 0 and
+            (redis.call('GET', 'privacy:generation:' .. id) or '0') == generation
+    end
+    if allowed then redis.call('XADD', KEYS[2], '*', 'payload', element) end
     redis.call('ZREM', KEYS[1], element)
 end
 return #elements
+"""
+
+STORE_DLQ_LUA = """
+local ok, job = pcall(cjson.decode, ARGV[1])
+if ok and type(job) == 'table' and job.chat_id then
+    local id = type(job.chat_id) == 'number' and string.format('%.0f', job.chat_id) or job.chat_id
+    local generation = tostring(job.recipient_generation or '0')
+    if redis.call('EXISTS', 'privacy:deleted:' .. id) == 0 and
+       (redis.call('GET', 'privacy:generation:' .. id) or '0') == generation then
+        redis.call('XADD', KEYS[1], '*', 'payload', ARGV[1], 'reason', ARGV[2], 'source_id', ARGV[3])
+        if ARGV[5] ~= '' then redis.call('SET', ARGV[5], 'failed', 'EX', 604800) end
+    end
+else
+    -- An unidentifiable payload may contain personal data; retain only metadata.
+    redis.call('XADD', KEYS[1], '*', 'reason', ARGV[2], 'source_id', ARGV[3])
+end
+redis.call('XACK', KEYS[2], ARGV[4], ARGV[3])
+redis.call('DEL', KEYS[3])
+return 1
 """
 
 
@@ -81,6 +116,14 @@ return #elements
 class DeliveryOutcome:
     status: str
     reason: str = ""
+
+
+@dataclass
+class DeliveryReservation:
+    generation: str
+    reserved: bool = False
+    job: DeliveryJob | None = None
+    guard: Callable[[], Awaitable[bool]] | None = None
 
 
 class Broadcaster:
@@ -93,7 +136,7 @@ class Broadcaster:
         self.redis = redis_client
         self.workers_count = workers_count
         self.delayed_queue_key = "delayed_alerts_queue"
-        self._salt = config.API_HASH.encode()
+        self._salt = bytes.fromhex(config.LOG_PSEUDONYM_KEY)
         self._night_start = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
         self._night_end = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
         self._tz = ZoneInfo(KYIV_TZ)
@@ -159,10 +202,11 @@ class Broadcaster:
         generation = await self.redis.get(f"privacy:generation:{chat_id}") or "0"
         common = {
             "event_id": identity,
-            "chat_id": chat_id,
+            "chat_id": str(chat_id),
             "source_chat_id": source_chat_id,
             "source_message_id": source_message_id,
             "source_timestamp": source_timestamp.isoformat() if source_timestamp else None,
+            "source_locations": sorted(locations or ()),
             "recipient_generation": generation,
         }
         first = json.dumps({**common, "step": 1, "text": first_text, "silent": stale})
@@ -171,8 +215,22 @@ class Broadcaster:
         now = int(time.time())
         script = self.redis.register_script(ENQUEUE_ALERT_LUA)
         added = await script(
-            keys=[f"delivery:enqueued:{identity}", self.delivery_stream_name, self.delayed_queue_key],
-            args=[first, now + ALERT_DELAY_1, second, now + ALERT_DELAY_1 + ALERT_DELAY_2, third, int(stale)],
+            keys=[
+                f"delivery:enqueued:{identity}",
+                self.delivery_stream_name,
+                self.delayed_queue_key,
+                f"privacy:deleted:{chat_id}",
+                f"privacy:generation:{chat_id}",
+            ],
+            args=[
+                first,
+                now + ALERT_DELAY_1,
+                second,
+                now + ALERT_DELAY_1 + ALERT_DELAY_2,
+                third,
+                int(stale),
+                generation,
+            ],
         )
         if added:
             RECIPIENTS_SELECTED.inc()
@@ -185,16 +243,46 @@ class Broadcaster:
         reply_markup: InlineKeyboardMarkup | None = None,
         disable_notification: bool = False,
         repeat: bool = False,
+        reservation: DeliveryReservation | None = None,
     ) -> DeliveryOutcome:
         peer_hash = self._hash_id(chat_id)
-        await self.rate_limiter.acquire(chat_id, repeat=repeat)
         try:
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode="HTML",
-                reply_markup=reply_markup,
-                disable_notification=disable_notification,
+            await asyncio.wait_for(
+                self.rate_limiter.acquire(chat_id, repeat=repeat), timeout=config.TELEGRAM_MAX_RETRY_SECONDS
+            )
+        except TimeoutError:
+            return DeliveryOutcome("retry", "rate_limit_timeout")
+        if reservation is not None and reservation.guard is not None and not await reservation.guard():
+            return DeliveryOutcome("retry", "ownership_lost")
+        if reservation is not None and reservation.job is not None:
+            content = delivery_content(reservation.job, text, disable_notification)
+            if content is None:
+                return DeliveryOutcome("cancelled", "stale_delivery")
+            text, disable_notification = content
+        if reservation is not None:
+            begin = self.redis.register_script(BEGIN_DELIVERY_LUA)
+            reservation.reserved = bool(
+                await begin(
+                    keys=[
+                        f"privacy:deleted:{chat_id}",
+                        f"privacy:generation:{chat_id}",
+                        f"privacy:inflight:{chat_id}",
+                    ],
+                    args=[reservation.generation],
+                )
+            )
+            if not reservation.reserved:
+                return DeliveryOutcome("cancelled", "privacy_deleted")
+        try:
+            await asyncio.wait_for(
+                self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                    disable_notification=disable_notification,
+                ),
+                timeout=120,
             )
             return DeliveryOutcome("sent")
         except TelegramRetryAfter as exc:
@@ -217,6 +305,13 @@ class Broadcaster:
             logger.exception("Telegram transport error for peer %s", peer_hash)
             return DeliveryOutcome("retry", "telegram_transport")
 
+    async def _move_to_dlq(self, message_id: str, payload: str, reason: str, stage_key: str = "") -> None:
+        script = self.redis.register_script(STORE_DLQ_LUA)
+        await script(
+            keys=[self.delivery_dlq_name, self.delivery_stream_name, f"delivery:retry:{message_id}"],
+            args=[payload, reason, message_id, self.delivery_group_name, stage_key],
+        )
+
     async def _finish_failed_job(self, message_id: str, payload: str, reason: str, *, permanent: bool = False) -> None:
         retry_key = f"delivery:retry:{message_id}"
         if permanent:
@@ -232,27 +327,24 @@ class Broadcaster:
             job = json.loads(payload)
             stage_key = f"delivery:stage:{job['event_id']}:{job['step']}"
         except (ValueError, KeyError, TypeError):
-            stage_key = None
-        pipe = self.redis.pipeline(transaction=True)
-        pipe.xadd(self.delivery_dlq_name, {"payload": payload, "reason": reason, "source_id": message_id})
-        if stage_key:
-            pipe.set(stage_key, "failed", ex=604800)
-        pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
-        pipe.delete(retry_key)
-        await pipe.execute()
+            stage_key = ""
+        await self._move_to_dlq(message_id, payload, reason, stage_key)
         logger.error("Delivery %s moved to DLQ after five failures", message_id)
 
-    async def _deliver_one(self, message_id: str, data: dict[str, str]) -> None:
+    async def _deliver_one(
+        self, message_id: str, data: dict[str, str], guard: Callable[[], Awaitable[bool]] | None = None
+    ) -> None:
         raw_payload = data.get("payload", "")
         try:
-            job: dict[str, Any] = json.loads(raw_payload)
-            chat_id = int(job["chat_id"])
-            step = int(job["step"])
-            text = str(job["text"])
-            if step not in (1, 2, 3):
-                raise ValueError("invalid delivery step")
-        except (ValueError, KeyError, TypeError) as exc:
-            await self._finish_failed_job(message_id, raw_payload, f"invalid job: {exc}")
+            parsed_job = parse_delivery_job(raw_payload)
+            job = parsed_job.model_dump(mode="json")
+            chat_id = parsed_job.chat_id
+            step = parsed_job.step
+            text = parsed_job.text
+        except (ValidationError, ValueError, TypeError, RecursionError):
+            # Invalid data cannot become valid by retrying; never log its contents.
+            logger.warning("Invalid delivery contract moved to quarantine: %s", message_id)
+            await self._move_to_dlq(message_id, "", "invalid_delivery_contract")
             return
 
         event_id = job.get("event_id")
@@ -273,9 +365,6 @@ class Broadcaster:
             except (TypeError, ValueError):
                 await self._finish_failed_job(message_id, raw_payload, "invalid source timestamp", permanent=True)
                 return
-        if step > 1 and not isinstance(event_id, str):
-            await self._finish_failed_job(message_id, raw_payload, "missing event identity")
-            return
         if isinstance(event_id, str) and await self.redis.get(f"delivery:stage:{event_id}:{step}") == "sent":
             await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
             return
@@ -284,16 +373,27 @@ class Broadcaster:
             source_message_id = job.get("source_message_id")
             if source_chat_id is not None and source_message_id is not None:
                 clear_id = await self.redis.get(f"threat:clear_id:{int(source_chat_id)}")
-                if clear_id is not None and int(clear_id) > int(source_message_id):
-                    await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                locations = job.get("source_locations")
+                scoped_clear = False
+                if isinstance(locations, list) and locations and all(isinstance(loc, str) for loc in locations):
+                    scoped_clear = all(
+                        (scoped_id is not None and int(scoped_id) > int(source_message_id))
+                        for scoped_id in await self.redis.mget(
+                            *[f"threat:clear_id:{int(source_chat_id)}:{loc}" for loc in locations]
+                        )
+                    )
+                if (clear_id is not None and int(clear_id) > int(source_message_id)) or scoped_clear:
+                    await self._skip_stage(message_id, event_id, step)
                     DELIVERY_OUTCOMES.labels(stage=str(step), outcome="cancelled_clear").inc()
                     return
             prior_state = await self.redis.get(f"delivery:stage:{event_id}:{step - 1}")
+            if prior_state == "skipped":
+                await self._skip_stage(message_id, event_id, step)
+                return
             if prior_state == "failed":
-                pipe = self.redis.pipeline(transaction=True)
-                pipe.xadd(self.delivery_dlq_name, {"payload": raw_payload, "reason": "previous stage failed"})
-                pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
-                await pipe.execute()
+                await self._move_to_dlq(
+                    message_id, raw_payload, "previous stage failed", f"delivery:stage:{event_id}:{step}"
+                )
                 return
             if prior_state != "sent":
                 # Requeue the delayed stage until the previous stage succeeds.
@@ -306,48 +406,69 @@ class Broadcaster:
         # Acknowledgement or daytime cutoff intentionally suppresses a delayed
         # stage. The first stage was already selected during the night.
         if step > 1 and (not self._is_night() or await self._db_mute_active(chat_id)):
-            await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+            await self._skip_stage(message_id, event_id, step)
             return
 
         if await self.redis.exists(f"telegram:blocked:{chat_id}"):
             await self._finish_failed_job(message_id, raw_payload, "recipient_blocked", permanent=True)
             return
 
-        outcome = await self.send_single_message(
-            chat_id,
-            text,
-            reply_markup=build_acknowledge_keyboard() if step == 1 else None,
-            disable_notification=bool(job.get("silent", False)),
-            repeat=step > 1,
-        )
-        if outcome.status == "sent":
-            DELIVERY_OUTCOMES.labels(stage=str(step), outcome="sent").inc()
-            source_timestamp = job.get("source_timestamp")
-            if isinstance(source_timestamp, str):
-                try:
-                    source_time = datetime.fromisoformat(source_timestamp)
-                    if source_time.tzinfo is not None:
-                        DELIVERY_LATENCY.labels(stage=str(step)).observe(
-                            max(0.0, (datetime.now(UTC) - source_time).total_seconds())
-                        )
-                except ValueError:
-                    logger.warning("Invalid source timestamp in delivery job %s", message_id)
-            pipe = self.redis.pipeline(transaction=True)
-            if isinstance(event_id, str):
-                pipe.set(f"delivery:stage:{event_id}:{step}", "sent", ex=604800)
-            pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
-            await pipe.execute()
-            await self.redis.delete(f"delivery:retry:{message_id}")
-            await self._record_delivered(chat_id)
-        else:
-            DELIVERY_OUTCOMES.labels(stage=str(step), outcome=outcome.status).inc()
-            if outcome.status == "blocked":
-                await self.redis.set(f"telegram:blocked:{chat_id}", "re_onboarding_required")
-            if outcome.status in ("blocked", "permanent"):
-                DELIVERY_PERMANENT_FAILURES.inc()
-            await self._finish_failed_job(
-                message_id, raw_payload, outcome.reason, permanent=outcome.status in ("blocked", "permanent")
+        reservation = DeliveryReservation(str(job.get("recipient_generation", "0")), job=parsed_job, guard=guard)
+        try:
+            outcome = await self.send_single_message(
+                chat_id,
+                text,
+                reply_markup=build_acknowledge_keyboard() if step == 1 else None,
+                disable_notification=bool(job.get("silent", False)),
+                repeat=step > 1,
+                reservation=reservation,
             )
+            if outcome.status == "cancelled":
+                if outcome.reason == "stale_delivery" and event_id is not None:
+                    await self._skip_stage(message_id, event_id, step)
+                else:
+                    await self.redis.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                return
+            if outcome.status == "sent":
+                DELIVERY_OUTCOMES.labels(stage=str(step), outcome="sent").inc()
+                source_timestamp = job.get("source_timestamp")
+                if isinstance(source_timestamp, str):
+                    try:
+                        source_time = datetime.fromisoformat(source_timestamp)
+                        if source_time.tzinfo is not None:
+                            DELIVERY_LATENCY.labels(stage=str(step)).observe(
+                                max(0.0, (datetime.now(UTC) - source_time).total_seconds())
+                            )
+                    except ValueError:
+                        logger.warning("Invalid source timestamp in delivery job %s", message_id)
+                pipe = self.redis.pipeline(transaction=True)
+                if isinstance(event_id, str):
+                    pipe.set(f"delivery:stage:{event_id}:{step}", "sent", ex=604800)
+                pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+                await pipe.execute()
+                await self.redis.delete(f"delivery:retry:{message_id}")
+                await self._record_delivered(chat_id)
+            else:
+                if outcome.reason == "ownership_lost":
+                    return  # The new owner is responsible for retries and ACK.
+                DELIVERY_OUTCOMES.labels(stage=str(step), outcome=outcome.status).inc()
+                if outcome.status == "blocked":
+                    await self.redis.set(f"telegram:blocked:{chat_id}", "re_onboarding_required")
+                if outcome.status in ("blocked", "permanent"):
+                    DELIVERY_PERMANENT_FAILURES.inc()
+                await self._finish_failed_job(
+                    message_id, raw_payload, outcome.reason, permanent=outcome.status in ("blocked", "permanent")
+                )
+        finally:
+            if reservation.reserved:
+                end = self.redis.register_script(END_DELIVERY_LUA)
+                await end(keys=[f"privacy:inflight:{chat_id}"])
+
+    async def _skip_stage(self, message_id: str, event_id: Any, step: int) -> None:
+        pipe = self.redis.pipeline(transaction=True)
+        pipe.set(f"delivery:stage:{event_id}:{step}", "skipped", ex=604800)
+        pipe.xack(self.delivery_stream_name, self.delivery_group_name, message_id)
+        await pipe.execute()
 
     async def process_delivery_stream(self, worker_index: int) -> None:
         """Consume new jobs and reclaim jobs left pending by failed processes."""
@@ -359,25 +480,25 @@ class Broadcaster:
                     self.delivery_stream_name,
                     self.delivery_group_name,
                     consumer,
-                    # send_single_message can wait up to 180s on flood control.
-                    # Do not let another process steal a job while it is sending.
-                    min_idle_time=max(240000, (config.TELEGRAM_MAX_RETRY_SECONDS + 60) * 1000),
+                    # Reserve one job at a time; its lease covers rate wait plus
+                    # the 120s Telegram request and a 60s completion margin.
+                    min_idle_time=(config.TELEGRAM_MAX_RETRY_SECONDS + 180) * 1000,
                     start_id=next_start_id,
-                    count=20,
+                    count=1,
                 )
                 next_start_id = claimed[0]
                 for message_id, data in claimed[1]:
-                    await self._deliver_one(message_id, data)
+                    await self._deliver_owned(message_id, data, consumer)
                 incoming = await self.redis.xreadgroup(
                     self.delivery_group_name,
                     consumer,
                     {self.delivery_stream_name: ">"},
-                    count=20,
+                    count=1,
                     block=1000,
                 )
                 for _stream, messages in incoming:
                     for message_id, data in messages:
-                        await self._deliver_one(message_id, data)
+                        await self._deliver_owned(message_id, data, consumer)
             except asyncio.CancelledError:
                 raise
             except ResponseError as exc:
@@ -389,6 +510,19 @@ class Broadcaster:
             except Exception:
                 logger.exception("Delivery stream worker failed; pending jobs will be reclaimed")
                 await asyncio.sleep(2)
+
+    async def _deliver_owned(self, message_id: str, data: dict[str, str], consumer: str) -> None:
+        try:
+            job = parse_delivery_job(data.get("payload", ""))
+            stage = f"{job.event_id}:{job.step}" if job.event_id else f"legacy:{message_id}"
+        except (ValueError, TypeError, RecursionError):
+            stage = f"invalid:{message_id}"
+        lease = DeliveryLease(
+            self.redis, self.delivery_stream_name, self.delivery_group_name, consumer, message_id, stage
+        )
+        await lease.run(
+            lambda: self._deliver_one(message_id, data, lease.renew), config.TELEGRAM_MAX_RETRY_SECONDS + 150
+        )
 
     async def process_delayed_alerts(self) -> None:
         script = self.redis.register_script(POP_MATURE_TASKS_LUA)

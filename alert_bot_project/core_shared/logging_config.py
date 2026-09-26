@@ -5,6 +5,13 @@ from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 
 from alert_bot_project.core_shared.config import config
+from alert_bot_project.core_shared.redaction import redact_metadata, redact_text
+
+
+class RedactingConsoleFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        # Escape line separators so untrusted messages cannot forge log records.
+        return redact_text(super().format(record)).replace("\r", "\\r").replace("\n", "\\n")
 
 
 class StructuredJsonFormatter(logging.Formatter):
@@ -29,7 +36,7 @@ class StructuredJsonFormatter(logging.Formatter):
         if hasattr(record, "extra_metadata"):
             log_payload["metadata"] = record.extra_metadata
 
-        return json.dumps(log_payload, ensure_ascii=False)
+        return json.dumps(redact_metadata(log_payload), ensure_ascii=False, default=str)
 
 
 def setup_logging(service_name: str) -> None:
@@ -46,7 +53,7 @@ def setup_logging(service_name: str) -> None:
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
-    console_formatter = logging.Formatter(
+    console_formatter = RedactingConsoleFormatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
     console_handler.setFormatter(console_formatter)

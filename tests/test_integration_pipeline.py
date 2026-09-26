@@ -171,3 +171,62 @@ async def test_large_fanout_reads_bounded_keyset_pages() -> None:
     assert broadcaster.enqueue_alert.await_count == 1200
     assert [call.kwargs["after_user_id"] for call in page_query.await_args_list] == [None, 500, 1000]
     redis_client.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mixed_clear_and_active_post_routes_only_active_location() -> None:
+    redis_client = AsyncMock()
+    clear_script = AsyncMock(return_value=1)
+    redis_client.register_script = MagicMock(return_value=clear_script)
+    broadcaster = MagicMock()
+    broadcaster.enqueue_alert = AsyncMock(return_value=True)
+    payload = AlertMessage(
+        message_id=43,
+        chat_id=-100,
+        raw_text="Відбій для центру. Ракети летять на Пересип",
+    ).model_dump_json()
+    with (
+        patch("alert_bot_project.worker.main.check_official_air_alarm", return_value=True),
+        patch("alert_bot_project.worker.main.get_target_user_ids_page", return_value=[123]) as page_query,
+        patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True),
+        patch.object(trigger_matcher, "get_matches", return_value=[]) as custom_matcher,
+    ):
+        await process_single_stream_payload("43-0", payload, redis_client, broadcaster, AsyncMock())
+
+    clear_script.assert_awaited_once_with(keys=["threat:clear_id:-100:center"], args=[43])
+    assert page_query.await_args.args[1:3] == ({"Ракети"}, {"peresyp"})
+    assert custom_matcher.await_args.args[0] == "ракети летять на пересип"
+    assert broadcaster.enqueue_alert.await_args.kwargs["locations"] == {"peresyp"}
+
+
+@pytest.mark.asyncio
+async def test_recovered_older_threat_is_suppressed_after_newer_clear() -> None:
+    redis_client = AsyncMock()
+    redis_client.get.side_effect = lambda key: "51" if key == "threat:clear_id:-100" else None
+    payload = AlertMessage(message_id=50, chat_id=-100, raw_text="Ракети летять на Пересип").model_dump_json()
+    with patch("alert_bot_project.worker.main.get_target_user_ids_page") as page_query:
+        await process_single_stream_payload("50-0", payload, redis_client, MagicMock(), AsyncMock())
+    page_query.assert_not_awaited()
+    redis_client.xack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_negated_location_does_not_expand_recipient_query() -> None:
+    redis_client = AsyncMock()
+    broadcaster = MagicMock()
+    broadcaster.enqueue_alert = AsyncMock(return_value=True)
+    payload = AlertMessage(
+        message_id=44,
+        chat_id=-100,
+        raw_text="Не виявлено ракет на центр, але БПЛА на Пересип",
+    ).model_dump_json()
+    with (
+        patch("alert_bot_project.worker.main.check_official_air_alarm", return_value=True),
+        patch("alert_bot_project.worker.main.get_target_user_ids_page", return_value=[123]) as page_query,
+        patch("alert_bot_project.worker.main.is_night_siren_interval_active", return_value=True),
+        patch.object(trigger_matcher, "get_matches", return_value=[]),
+    ):
+        await process_single_stream_payload("44-0", payload, redis_client, broadcaster, AsyncMock())
+
+    assert page_query.await_args.args[1:3] == ({"Мопеди"}, {"peresyp"})
+    assert broadcaster.enqueue_alert.await_args.kwargs["locations"] == {"peresyp"}

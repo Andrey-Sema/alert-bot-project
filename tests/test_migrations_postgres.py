@@ -3,12 +3,13 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 import asyncpg
 import pytest
 
 
-async def _alembic(*arguments: str) -> None:
+async def _alembic(*arguments: str, env: dict[str, str] | None = None) -> None:
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -16,13 +17,14 @@ async def _alembic(*arguments: str) -> None:
         *arguments,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env=env,
     )
     output, _ = await process.communicate()
     assert process.returncode == 0, output.decode(errors="replace")
 
 
 @pytest.mark.asyncio
-async def test_upgrade_adopts_legacy_schema_and_protects_data_api() -> None:
+async def test_upgrade_adopts_legacy_schema_and_protects_data_api(tmp_path: Path) -> None:
     if os.getenv("GITHUB_ACTIONS") != "true":
         pytest.skip("disposable PostgreSQL service runs in CI")
 
@@ -44,6 +46,12 @@ async def test_upgrade_adopts_legacy_schema_and_protects_data_api() -> None:
         await connection.execute("GRANT ALL ON user_settings, user_triggers TO anon, authenticated")
 
         await _alembic("upgrade", "head")
+        database_file = tmp_path / "database_url"
+        database_file.write_text(os.environ["MIGRATION_DATABASE_URL"] + "\n", encoding="utf-8")
+        file_only_env = dict(os.environ)
+        file_only_env.pop("MIGRATION_DATABASE_URL")
+        file_only_env["MIGRATION_DATABASE_URL_FILE"] = str(database_file)
+        await _alembic("current", env=file_only_env)
         assert await connection.fetchval("SELECT count(*) FROM user_settings WHERE user_id = 123") == 1
         assert await connection.fetchval("SELECT count(*) FROM user_triggers WHERE trigger_word = 'center'") == 1
         for table in ("user_settings", "user_triggers"):

@@ -259,7 +259,12 @@ cd alert-bot-project
 
 ```bash
 cp env.example .env
-# Відкрийте .env та заповніть усі змінні (деталі нижче)
+# Root .env: infrastructure interpolation only. Fill Redis/Grafana values.
+for service in worker bot_ui scraper migrator; do
+  cp "deploy/$service.env.example" ".env.$service"
+done
+# Fill each service file independently; never copy root .env into them.
+# Provision PostgreSQL roles first: docs/service_isolation.md
 nano .env
 ```
 
@@ -306,21 +311,23 @@ open http://localhost:3000  # admin / $GRAFANA_PASSWORD
 
 ## ⚙️ Конфігурація
 
-Усі налаштування зберігаються в `.env` файлі та валідуються через [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) при старті.
+Compose використовує окремі `.env.worker`, `.env.bot_ui`, `.env.scraper`, `.env.migrator`; root `.env` лише для інфраструктури. Ролі PostgreSQL спочатку налаштовує оператор за [інструкцією](docs/service_isolation.md). Нижче наведено перелік змінних, який не можна цілком передавати всім сервісам. Значення валідуються через [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) при старті.
 
 ```dotenv
 # ─── Telegram ────────────────────────────────────────────────────────────────
-BOT_TOKEN=1234567890:ABCdefGhIJKlmNoPQRsTUVwXyZ     # Токен від @BotFather
+# Required independent key; generate with secrets.token_hex(32), preferably use LOG_PSEUDONYM_KEY_FILE
+LOG_PSEUDONYM_KEY=REPLACE_WITH_RANDOM_64_HEX_CHARACTERS
+BOT_TOKEN=REPLACE_BOT_TOKEN     # Токен від @BotFather
 ADMIN_CHAT_ID=987654321                              # Ваш Telegram ID для Alertmanager
 API_ID=1234567                                       # API ID з my.telegram.org
-API_HASH=abcdef0123456789abcdef0123456789           # API Hash з my.telegram.org
+API_HASH=REPLACE_API_HASH           # API Hash з my.telegram.org
 GROUP_ID=-1001234567890                              # ID цільового Telegram-каналу
 
 # Опціонально: рядок сесії Pyrogram для stateless деплою (PaaS/K8s)
 PYROGRAM_SESSION_STRING=
 
 # ─── Інфраструктура ──────────────────────────────────────────────────────────
-DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db
+DATABASE_URL=postgresql+asyncpg://REPLACE_RUNTIME_ROLE:REPLACE_DB_PASSWORD@REPLACE_DB_HOST/REPLACE_DB_NAME
 REDIS_URL=redis://redis:6379/0
 
 # ─── Порти метрик (мають бути УНІКАЛЬНИМИ — перевіряється Pydantic) ──────────
@@ -345,7 +352,7 @@ LOG_MAX_BYTES=20971520              # 20 МБ
 LOG_BACKUP_COUNT=5
 
 # ─── Observability ───────────────────────────────────────────────────────────
-GRAFANA_PASSWORD=super_secure_admin_password_2026
+GRAFANA_PASSWORD=REPLACE_GRAFANA_PASSWORD
 ```
 
 > **Важливо:** Валідатор Pydantic перевіряє унікальність портів метрик та діапазони значень (`NIGHT_START_HOUR` 0–23, порти 1024–65535) на етапі ініціалізації контейнера.
@@ -619,3 +626,7 @@ alert-bot-project/
 **[⬆ Повернутися нагору](#️-odesaalert-bot)**
 
 </div>
+
+Порядок включения обязательного независимого ключа логов и secret-файлов: [docs/secret_hardening.md](docs/secret_hardening.md).
+
+Разделение env-файлов, роли PostgreSQL и порядок включения: [docs/service_isolation.md](docs/service_isolation.md). Общая `.env` больше не передаётся Python-контейнерам.

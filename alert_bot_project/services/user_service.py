@@ -14,6 +14,7 @@ from alert_bot_project.core_shared.constants import (
     ODESA_LOCS,
     OUTSIDE_LOCS,
 )
+from alert_bot_project.core_shared.trigger_cache import update_custom_trigger_cache
 from alert_bot_project.database.activity import record_activity
 from alert_bot_project.database.crud import (
     add_user_trigger,
@@ -72,8 +73,7 @@ class UserService:
             await record_activity(self.session, user_id)
             await self.session.commit()
             try:
-                await self.redis.sadd("global_custom_triggers", trigger_word)  # type: ignore[misc]
-                await self.redis.incr("global_custom_triggers:version")
+                await update_custom_trigger_cache(self.redis, trigger_word, add=True)
             except RedisError:
                 logger.exception("Trigger cache update failed after commit; periodic reconciliation will repair it")
             return True, "Локацію додано"
@@ -92,8 +92,7 @@ class UserService:
         res = await self.session.execute(stmt)
         if not res.scalar():
             try:
-                await self.redis.srem("global_custom_triggers", trigger_word)  # type: ignore[misc]
-                await self.redis.incr("global_custom_triggers:version")
+                await update_custom_trigger_cache(self.redis, trigger_word, add=False)
             except RedisError:
                 logger.exception("Trigger cache invalidation failed after commit; reconciliation will repair it")
 

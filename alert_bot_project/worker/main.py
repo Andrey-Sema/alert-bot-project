@@ -4,10 +4,9 @@ import json
 import logging
 import os
 import random
+import secrets
 import signal
 import socket
-import time
-import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -21,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from alert_bot_project.core_shared.config import config
-from alert_bot_project.core_shared.constants import KYIV_TZ
+from alert_bot_project.core_shared.constants import KYIV_TZ, MAX_GLOBAL_CUSTOM_TRIGGERS, SOURCE_REPLAY_HORIZON_SECONDS
 from alert_bot_project.core_shared.logging_config import setup_logging
 from alert_bot_project.core_shared.metrics import (
     ALERTS_PROCESSED,
@@ -36,15 +35,19 @@ from alert_bot_project.core_shared.metrics import (
     WORKER_ERRORS,
     start_metrics_server,
 )
+from alert_bot_project.core_shared.redis_connection import create_service_redis
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
+from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache
 from alert_bot_project.database.activity import prune_old_activity
 from alert_bot_project.database.crud import get_target_user_ids_page, get_users_by_trigger_and_category
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserTrigger
+from alert_bot_project.database.privileges import verify_runtime_privileges
 from alert_bot_project.services.ukrainealarm import AlarmStatePoller
 from alert_bot_project.worker.broadcaster import Broadcaster
 from alert_bot_project.worker.custom_matcher import CustomTriggerMatcher
+from alert_bot_project.worker.queue_metrics import delivery_backlog
 from alert_bot_project.worker.stream_retention import trim_acknowledged_stream
 
 setup_logging("worker")
@@ -58,8 +61,6 @@ CONSUMER_NAME = f"worker_{socket.gethostname()}_{os.getpid()}"
 NIGHT_START = datetime.strptime(f"{config.NIGHT_START_HOUR}:00", "%H:%M").time()
 NIGHT_END = datetime.strptime(f"{config.NIGHT_END_HOUR}:00", "%H:%M").time()
 
-REDIS_CUSTOM_TRIGGERS_KEY = "global_custom_triggers"
-REDIS_NEW_TRIGGERS_KEY = "global_custom_triggers:new"
 REDIS_TRIGGERS_VERSION_KEY = "global_custom_triggers:version"
 OFFICIAL_ALARM_KEY = "official_alarm_status:odesa"
 
@@ -73,10 +74,10 @@ else
 end
 """
 
-AUDIT_EXPIRED_LUA = """
+AUDIT_EXPIRED_LUA = f"""
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 redis.call('XADD', KEYS[2], '*', 'source_id', ARGV[1], 'payload', ARGV[2], 'reason', 'older_than_600s')
-redis.call('SET', KEYS[1], '1', 'EX', 604800)
+redis.call('SET', KEYS[1], '1', 'EX', {SOURCE_REPLAY_HORIZON_SECONDS})
 return 1
 """
 
@@ -145,33 +146,21 @@ async def cleanup_dead_consumers(redis_client: Redis) -> None:
 async def sync_global_custom_triggers(redis_client: Redis) -> None:
     from alert_bot_project.core_shared.constants import ODESA_LOCS, OUTSIDE_LOCS
 
+    version = await redis_client.get(REDIS_TRIGGERS_VERSION_KEY)
     all_static = list(ODESA_LOCS.keys()) + list(OUTSIDE_LOCS.keys())
     async with AsyncSessionLocal() as session:
         stmt = select(UserTrigger.trigger_word).where(UserTrigger.trigger_word.not_in(all_static)).distinct()
         res = await session.execute(stmt)
         triggers = res.scalars().all()
 
-        if set(triggers) == await redis_client.smembers(REDIS_CUSTOM_TRIGGERS_KEY):  # type: ignore[misc]
-            await redis_client.incr(REDIS_TRIGGERS_VERSION_KEY)
-            return
-
-        if not triggers:
-            await redis_client.delete(REDIS_CUSTOM_TRIGGERS_KEY)
-            await redis_client.incr(REDIS_TRIGGERS_VERSION_KEY)
-            return
-
-        # redis.asyncio Pipeline-команди — це корутини, їх ОБОВ'ЯЗКОВО треба await-ити
-        # навіть у буферизованому режимі. Без await вони ніколи не потрапляють у
-        # command_stack, і pipe.execute() виконує 0 команд — раніше delete/sadd/rename
-        # викликались без await і мовчки нічого не робили (глобальний пул кастомних
-        # фраз ніколи не перебудовувався при старті воркера).
-        pipe = redis_client.pipeline()
-        pipe.delete(REDIS_NEW_TRIGGERS_KEY)
-        pipe.sadd(REDIS_NEW_TRIGGERS_KEY, *triggers)
-        pipe.rename(REDIS_NEW_TRIGGERS_KEY, REDIS_CUSTOM_TRIGGERS_KEY)
-        pipe.incr(REDIS_TRIGGERS_VERSION_KEY)
-        await pipe.execute()
-        logger.info("Synchronized %d global custom triggers via Pipeline.", len(triggers))
+        desired = set(triggers)
+        if len(desired) > MAX_GLOBAL_CUSTOM_TRIGGERS:
+            raise ValueError("Global custom trigger limit exceeded in database")
+        changed = await reconcile_custom_trigger_cache(redis_client, desired, version)
+        if changed == 1:
+            logger.info("Synchronized %d global custom triggers.", len(desired))
+        elif changed == -1:
+            logger.info("Custom trigger cache changed during reconciliation; retrying next cycle")
 
 
 async def init_redis_consumer_group(redis_client: Redis) -> None:
@@ -194,10 +183,12 @@ async def monitor_dlq_backlog(redis_client: Redis) -> None:
             await trim_acknowledged_stream(redis_client, STREAM_NAME)
             await trim_acknowledged_stream(redis_client, Broadcaster.delivery_stream_name)
             SOURCE_BACKLOG.set(await redis_client.xlen(STREAM_NAME))
-            DELIVERY_BACKLOG.set(await redis_client.xlen(Broadcaster.delivery_stream_name))
+            pending, oldest_age = await delivery_backlog(
+                redis_client, Broadcaster.delivery_stream_name, Broadcaster.delivery_group_name
+            )
+            DELIVERY_BACKLOG.set(pending)
             DELAYED_BACKLOG.set(await redis_client.zcard("delayed_alerts_queue"))
-            oldest = await redis_client.xrange(Broadcaster.delivery_stream_name, count=1)
-            DELIVERY_OLDEST_AGE.set(max(0, time.time() - int(oldest[0][0].split("-")[0]) / 1000) if oldest else 0)
+            DELIVERY_OLDEST_AGE.set(oldest_age)
         except asyncio.CancelledError:
             raise
         except RedisError:
@@ -305,7 +296,7 @@ async def _resolve_target_users(
     """
     cache_hash_key = f"cache:alert_targets:{checksum}"
     lock_key = f"lock:cache_build:{checksum}"
-    lock_token = str(uuid.uuid4())
+    lock_token = secrets.token_hex(32)
 
     for _ in range(15):
         cached_targets = await _try_get_cached_targets(redis_client, cache_hash_key)
@@ -342,7 +333,7 @@ async def _validate_payload(redis_client: Redis, redis_msg_id: str, raw_json: st
     try:
         alert_data = AlertMessage.model_validate_json(raw_json)
     except (ValidationError, ValueError):
-        logger.exception("Dropped corrupted payload")
+        logger.warning("Dropped invalid source contract: %s", redis_msg_id)
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return None
 
@@ -418,19 +409,40 @@ async def process_single_stream_payload(
             EXPIRED_ALERTS.inc()
             logger.warning("Recovered expired source alert %s as historical notice", redis_msg_id)
 
-    status = TextProcessor.classify_status(alert_data.raw_text)
-    if status == "clear":
+    signal = TextProcessor.analyze_signal(alert_data.raw_text)
+    if signal.global_clear or signal.clear_locations:
         clear_script = redis_client.register_script(RECORD_CLEAR_LUA)
-        await clear_script(keys=[f"threat:clear_id:{alert_data.chat_id}"], args=[alert_data.message_id])
+        if signal.global_clear:
+            await clear_script(keys=[f"threat:clear_id:{alert_data.chat_id}"], args=[alert_data.message_id])
+        for location in signal.clear_locations:
+            await clear_script(keys=[f"threat:clear_id:{alert_data.chat_id}:{location}"], args=[alert_data.message_id])
+    if signal.status == "clear":
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return
-    if status == "negated":
+    if signal.status == "negated":
         await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
         return
 
     with PROCESSING_TIME.time():
-        analysis = TextProcessor.parse_message(alert_data.raw_text)
-        normalized_text = TextProcessor.normalize(alert_data.raw_text)
+        analysis = TextProcessor.parse_message(signal.positive_text)
+        normalized_text = TextProcessor.normalize(signal.positive_text)
+
+        # History recovery can publish an older threat after a newer clear.
+        # Suppress the first delivery as well as the delayed stages in that case.
+        global_clear_id = await redis_client.get(f"threat:clear_id:{alert_data.chat_id}")
+        if global_clear_id is not None and int(global_clear_id) > alert_data.message_id:
+            await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+            return
+        locations = analysis["locations"]
+        if locations:
+            scoped_ids = await redis_client.mget(
+                *[f"threat:clear_id:{alert_data.chat_id}:{location}" for location in locations]
+            )
+            if len(scoped_ids) == len(locations) and all(
+                clear_id is not None and int(clear_id) > alert_data.message_id for clear_id in scoped_ids
+            ):
+                await redis_client.xack(STREAM_NAME, GROUP_NAME, redis_msg_id)
+                return
 
         matched_custom = await trigger_matcher.get_matches(normalized_text, redis_client)
         official_alarm_active = await check_official_air_alarm(redis_client)
@@ -593,10 +605,14 @@ async def _consume_loop(redis_client: Redis, broadcaster: Broadcaster, release_l
 
 async def main() -> None:
     logger.info("Production background alert stream analysis subsystem initialization...")
+    if config.SERVICE_ROLE != "worker":
+        raise RuntimeError("Worker requires SERVICE_ROLE=worker")
+    async with AsyncSessionLocal() as session:
+        await verify_runtime_privileges(session, "worker")
     start_metrics_server(config.METRICS_PORT_WORKER)
 
     bot = Bot(token=config.BOT_TOKEN)
-    redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
+    redis_client = create_service_redis()
 
     release_lock_script: ReleaseLockScript = redis_client.register_script(RELEASE_LOCK_LUA)
 

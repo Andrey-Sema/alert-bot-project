@@ -1,45 +1,96 @@
 import os
-from pathlib import Path
-from urllib.parse import urlsplit
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from alert_bot_project.core_shared.redis_transport import validate_redis_transport_url
+from alert_bot_project.core_shared.secrets import SECRET_NAMES, load_secret
+
 
 class Settings(BaseSettings):
+    SERVICE_ROLE: Literal["development", "worker", "bot_ui", "scraper", "migrator"] = "development"
+
     @model_validator(mode="before")
     @classmethod
     def load_secret_files(cls, values: dict[str, object]) -> dict[str, object]:
-        for name in ("BOT_TOKEN", "API_HASH", "DATABASE_URL", "REDIS_URL", "UKRAINEALARM_API_KEY"):
-            path = os.getenv(f"{name}_FILE")
-            if path:
-                secret_path = Path(path)
-                if secret_path.stat().st_size > 4096:
-                    raise ValueError(f"{name}_FILE exceeds 4096 bytes")
-                values[name] = secret_path.read_text(encoding="utf-8").strip()
+        service = values.get("SERVICE_ROLE", os.getenv("SERVICE_ROLE", "development"))
+        if service not in ("development", "migrator") and (
+            values.get("MIGRATION_DATABASE_URL") or os.getenv("MIGRATION_DATABASE_URL_FILE") is not None
+        ):
+            raise ValueError("Migration credentials must not be supplied to runtime services")
+        forbidden_files: tuple[str, ...] = ()
+        if service in ("worker", "bot_ui", "migrator"):
+            forbidden_files += ("API_HASH", "PYROGRAM_SESSION_STRING")
+        if service in ("scraper", "migrator"):
+            forbidden_files += ("DATABASE_URL",)
+        if any(os.getenv(f"{name}_FILE") is not None for name in forbidden_files):
+            raise ValueError("Unrelated secret files must not be supplied to this service")
+        for name in SECRET_NAMES:
+            if os.getenv(f"{name}_FILE") is not None:
+                values[name] = load_secret(name, max_bytes=16384 if name == "PYROGRAM_SESSION_STRING" else 4096)
         return values
 
     # Telegram Bot Settings
-    BOT_TOKEN: str = Field(..., description="Official UI bot token obtained from BotFather")
-    GROUP_ID: int = Field(..., description="Target channel or group ID to parse threat monitoring data from")
+    BOT_TOKEN: str = Field("", repr=False, description="Official UI bot token obtained from BotFather")
+    GROUP_ID: int = Field(0, description="Target channel or group ID to parse threat monitoring data from")
 
     # Userbot (Pyrogram) Settings
-    API_ID: int = Field(..., description="API ID from my.telegram.org")
-    API_HASH: str = Field(..., description="API Hash from my.telegram.org")
+    API_ID: int = Field(0, description="API ID from my.telegram.org")
+    API_HASH: str = Field("", repr=False, description="API Hash from my.telegram.org")
+
+    LOG_PSEUDONYM_KEY: str = Field(..., repr=False, description="Independent random 32-byte key as 64 hex characters")
+    PYROGRAM_SESSION_STRING: str = Field("", repr=False, max_length=16384)
+
+    @field_validator("PYROGRAM_SESSION_STRING")
+    @classmethod
+    def bound_session_bytes(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 16384:
+            raise ValueError("PYROGRAM_SESSION_STRING exceeds 16384 bytes")
+        return value
+
+    @field_validator("LOG_PSEUDONYM_KEY")
+    @classmethod
+    def validate_log_key(cls, value: str) -> str:
+        if len(value) != 64 or any(char not in "0123456789abcdefABCDEF" for char in value):
+            raise ValueError("LOG_PSEUDONYM_KEY must contain exactly 64 hexadecimal characters")
+        if len(set(value.lower())) == 1:
+            raise ValueError("LOG_PSEUDONYM_KEY must be independently randomly generated")
+        return value.lower()
+
+    @model_validator(mode="after")
+    def separate_log_key(self) -> "Settings":
+        if self.LOG_PSEUDONYM_KEY in (self.API_HASH.lower(), self.BOT_TOKEN.lower()):
+            raise ValueError("LOG_PSEUDONYM_KEY cannot reuse Telegram credentials")
+        return self
 
     # Infrastructure Settings (Supabase & Redis)
-    DATABASE_URL: str = Field(..., description="Connection string for PostgreSQL / Supabase")
-    REDIS_URL: str = Field("redis://localhost:6379/0", description="Connection string for Redis instance")
+    DATABASE_URL: str = Field("", repr=False, description="Runtime PostgreSQL connection string")
+    MIGRATION_DATABASE_URL: str = Field("", repr=False, description="Migration-only PostgreSQL connection string")
+    REDIS_URL: str = Field("redis://localhost:6379/0", repr=False, description="Connection string for Redis instance")
+    REDIS_TLS_CA_FILE: str | None = Field(None, description="Optional Redis TLS trust store")
+
+    @model_validator(mode="after")
+    def require_service_credentials(self) -> "Settings":
+        required = {
+            "development": ("BOT_TOKEN", "GROUP_ID", "API_ID", "API_HASH", "DATABASE_URL"),
+            "worker": ("BOT_TOKEN", "DATABASE_URL"),
+            "bot_ui": ("BOT_TOKEN", "DATABASE_URL"),
+            "scraper": ("GROUP_ID", "API_ID", "API_HASH"),
+            "migrator": ("MIGRATION_DATABASE_URL",),
+        }[self.SERVICE_ROLE]
+        if any(not getattr(self, name) for name in required):
+            raise ValueError("Required service credentials are missing")
+        if self.SERVICE_ROLE in ("scraper", "migrator") and self.DATABASE_URL:
+            raise ValueError("Runtime DATABASE_URL must not be supplied to scraper/migrator")
+        if self.SERVICE_ROLE in ("worker", "bot_ui", "migrator") and (self.API_HASH or self.PYROGRAM_SESSION_STRING):
+            raise ValueError("Scraper credentials must not be supplied to this service")
+        return self
 
     @field_validator("REDIS_URL")
     @classmethod
     def require_tls_for_external_redis(cls, value: str) -> str:
-        parsed = urlsplit(value)
-        if parsed.scheme not in ("redis", "rediss") or not parsed.hostname:
-            raise ValueError("REDIS_URL must be a redis:// or rediss:// URL")
-        if parsed.scheme == "redis" and parsed.hostname not in ("localhost", "127.0.0.1", "::1", "redis"):
-            raise ValueError("External Redis requires rediss:// with TLS")
-        return value
+        return validate_redis_transport_url(value)
 
     # ✅ ФИКС: Добавлены строгие диапазоны портов (ge=1024, le=65535) для предотвращения системных сбоев
     METRICS_PORT_WORKER: int = Field(8000, ge=1024, le=65535, description="Prometheus metrics port for worker service")
@@ -53,7 +104,7 @@ class Settings(BaseSettings):
     NIGHT_START_HOUR: int = Field(22, ge=0, le=23, description="Start hour for quiet hours/night mode status")
     NIGHT_END_HOUR: int = Field(7, ge=0, le=23, description="End hour for quiet hours/night mode status")
 
-    UKRAINEALARM_API_KEY: str = Field("", description="API-ключ від api.ukrainealarm.com")
+    UKRAINEALARM_API_KEY: str = Field("", repr=False, description="API-ключ від api.ukrainealarm.com")
     UKRAINEALARM_REGION_ID: str | None = Field(
         None, description="ID Одеської області; якщо None — резолвиться автоматично за назвою"
     )
@@ -69,7 +120,7 @@ class Settings(BaseSettings):
 
     # Fix: Removed magic numbers by adding configurable network threshold parameters
     TELEGRAM_MAX_RETRY_SECONDS: int = Field(
-        180, description="Maximum total allowed cumulative sleep duration for Telegram 429 backoff"
+        180, ge=1, le=180, description="Maximum wait for a shared Telegram rate slot"
     )
 
     # ✅ ФИКС: Модель-валидатор для атомарной проверки уникальности портов на этапе инициализации контейнера
@@ -83,7 +134,9 @@ class Settings(BaseSettings):
             )
         return self
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
 
 
 config = Settings()

@@ -1,4 +1,5 @@
 # noinspection PyPackageRequirements,PyUnresolvedReferences,SpellCheckingInspection
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +24,15 @@ def mock_fsm_state() -> AsyncMock:
 
 
 class TestStartHandlers:
+    @pytest.fixture(autouse=True)
+    def mock_privacy_lock(self):
+        @asynccontextmanager
+        async def unlocked(_redis, _user_id):
+            yield
+
+        with patch("alert_bot_project.bot.handlers.start.user_privacy_lock", unlocked):
+            yield
+
     @pytest.mark.asyncio
     @patch("alert_bot_project.bot.handlers.start.get_or_create_user")
     async def test_process_start_command_success(self, mock_get_user: MagicMock, mock_db_session: AsyncMock) -> None:

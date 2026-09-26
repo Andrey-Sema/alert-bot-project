@@ -1,3 +1,5 @@
+import time
+import tracemalloc
 from unittest.mock import AsyncMock
 
 import pytest
@@ -39,3 +41,24 @@ async def test_matcher_rejects_unbounded_global_dictionary() -> None:
     redis.smembers.return_value = {f"phrase_{i}" for i in range(MAX_GLOBAL_CUSTOM_TRIGGERS + 1)}
     with pytest.raises(ValueError, match="limit exceeded"):
         await CustomTriggerMatcher().get_matches("test", redis)
+
+
+def test_matcher_5000_phrase_latency_and_memory_budget() -> None:
+    phrases = {f"сектор_{number:05d}" for number in range(MAX_GLOBAL_CUSTOM_TRIGGERS)}
+    matcher = CustomTriggerMatcher()
+    tracemalloc.start()
+    try:
+        started = time.perf_counter()
+        matcher._build(phrases)
+        build_seconds = time.perf_counter() - started
+        samples = []
+        for _ in range(100):
+            started = time.perf_counter()
+            assert matcher._match("Увага! Загроза у сектор_04999 біля центру.") == ["сектор_04999"]
+            samples.append(time.perf_counter() - started)
+        peak_bytes = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert build_seconds < 10
+    assert sorted(samples)[94] < 0.1
+    assert peak_bytes < 100 * 1024 * 1024

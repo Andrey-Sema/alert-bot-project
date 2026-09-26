@@ -1,5 +1,6 @@
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from alert_bot_project.core_shared.constants import KR_POTVORY, ODESA_LOCS, OUTSIDE_LOCS
@@ -11,6 +12,7 @@ NEGATION_PATTERN = re.compile(
     r"нет\s+(?:угрозы|ракет|бпла)|загрози\s+немає)\b",
     re.IGNORECASE,
 )
+RESOLVED_PATTERN = re.compile(r"\b(?:минул\w*|більше\s+не|больше\s+не|чисто)\b", re.IGNORECASE)
 CLAUSE_SPLIT_PATTERN = re.compile(r"[,.;!?\n]+|\b(?:але|однак|но)\b", re.IGNORECASE)
 
 
@@ -29,34 +31,53 @@ COMPILED_LOCATIONS = {
 }
 
 
+@dataclass(frozen=True)
+class SignalAnalysis:
+    status: str
+    positive_text: str
+    clear_locations: frozenset[str]
+    global_clear: bool
+
+
 class TextProcessor:
     @classmethod
-    def classify_status(cls, raw_text: str) -> str:
-        """Classify explicit clear/negated statements conservatively."""
-        saw_clear = False
+    def analyze_signal(cls, raw_text: str) -> SignalAnalysis:
+        """Keep clear, negated and actionable clauses separate for routing."""
+        clear_locations: set[str] = set()
+        global_clear = False
         saw_negation = False
         saw_active = False
+        positive_clauses: list[str] = []
         for raw_clause in CLAUSE_SPLIT_PATTERN.split(raw_text):
             clause = cls.normalize(raw_clause)
             if not clause:
                 continue
-            if CLEAR_PATTERN.search(clause):
-                saw_clear = True
+            if CLEAR_PATTERN.search(clause) or RESOLVED_PATTERN.search(clause):
+                locations = cls.parse_message(raw_clause)["locations"]
+                if locations:
+                    clear_locations.update(locations)
+                else:
+                    global_clear = True
                 continue
             if NEGATION_PATTERN.search(clause):
                 saw_negation = True
                 continue
+            positive_clauses.append(raw_clause)
             if any(pattern.search(clause) for pattern in COMPILED_CATEGORIES.values()):
                 saw_active = True
-        if saw_clear:
-            if saw_active and re.search(r"\b(?:але|однак|но)\b", raw_text, re.IGNORECASE):
-                return "active"
-            return "clear"
         if saw_active:
-            return "active"
-        if saw_negation:
-            return "negated"
-        return "unknown"
+            status = "active"
+        elif global_clear or clear_locations:
+            status = "clear"
+        elif saw_negation:
+            status = "negated"
+        else:
+            status = "unknown"
+        return SignalAnalysis(status, " ".join(positive_clauses), frozenset(clear_locations), global_clear)
+
+    @classmethod
+    def classify_status(cls, raw_text: str) -> str:
+        return cls.analyze_signal(raw_text).status
 
     @staticmethod
     def normalize(text: str) -> str:

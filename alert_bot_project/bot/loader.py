@@ -9,6 +9,7 @@ from aiohttp import ClientTimeout
 from redis.asyncio import Redis
 
 from alert_bot_project.core_shared.config import config
+from alert_bot_project.core_shared.redis_connection import create_service_redis
 
 logger = logging.getLogger("bot.loader")
 
@@ -44,7 +45,7 @@ def __getattr__(name: str) -> Any:
     if name == "redis_client":
         if _redis_client is None:
             logger.info("Lazy-initializing shared production Redis connection pool...")
-            _redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
+            _redis_client = create_service_redis()
         return _redis_client
 
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
