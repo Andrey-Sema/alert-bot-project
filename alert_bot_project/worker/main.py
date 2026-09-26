@@ -35,6 +35,7 @@ from alert_bot_project.core_shared.metrics import (
     WORKER_ERRORS,
     start_metrics_server,
 )
+from alert_bot_project.core_shared.redis_connection import create_service_redis
 from alert_bot_project.core_shared.schemas import AlertMessage
 from alert_bot_project.core_shared.text_processor import TextProcessor
 from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache
@@ -611,7 +612,7 @@ async def main() -> None:
     start_metrics_server(config.METRICS_PORT_WORKER)
 
     bot = Bot(token=config.BOT_TOKEN)
-    redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True, socket_connect_timeout=3, socket_timeout=5)
+    redis_client = create_service_redis()
 
     release_lock_script: ReleaseLockScript = redis_client.register_script(RELEASE_LOCK_LUA)
 

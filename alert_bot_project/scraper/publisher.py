@@ -6,6 +6,7 @@ from redis.exceptions import ConnectionError, RedisError
 
 from alert_bot_project.core_shared.config import config
 from alert_bot_project.core_shared.constants import SOURCE_REPLAY_HORIZON_SECONDS
+from alert_bot_project.core_shared.redis_connection import create_service_redis
 
 logger = logging.getLogger("scraper.publisher")
 
@@ -26,9 +27,7 @@ class RedisPublisher:
     async def connect(self) -> None:
         """Ініціалізує з'єднання з пулом Redis Streams."""
         if not self._redis:
-            redis_client = Redis.from_url(
-                self.redis_url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5
-            )
+            redis_client = create_service_redis(self.redis_url)
             try:
                 await redis_client.ping()
             except Exception:

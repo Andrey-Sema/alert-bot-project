@@ -3,14 +3,13 @@
 import asyncio
 import sys
 
-from redis.asyncio import Redis
 from sqlalchemy import text
 
-from alert_bot_project.core_shared.config import config
+from alert_bot_project.core_shared.redis_connection import create_service_redis
 
 
 async def check_ready(service: str) -> bool:
-    redis_client = Redis.from_url(config.REDIS_URL, decode_responses=True)
+    redis_client = create_service_redis()
     try:
         async with asyncio.timeout(4):
             await redis_client.ping()

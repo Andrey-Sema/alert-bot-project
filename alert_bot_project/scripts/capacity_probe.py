@@ -11,6 +11,7 @@ from aiogram import Bot
 from redis.asyncio import Redis
 
 from alert_bot_project.core_shared.config import config
+from alert_bot_project.core_shared.redis_connection import create_service_redis
 from alert_bot_project.worker.broadcaster import Broadcaster
 
 
@@ -68,7 +69,7 @@ async def probe_fanout(redis_client: Redis, recipients: int, posts_per_minute: i
 
 
 async def _run(redis_url: str, recipients: int, scenarios: list[int]) -> None:
-    client = Redis.from_url(redis_url, decode_responses=True)
+    client = create_service_redis(redis_url)
     try:
         results = [await probe_fanout(client, recipients, scenario) for scenario in scenarios]
         print(json.dumps({"scope": "Redis fanout only; no SQL or Telegram delivery", "results": results}, indent=2))

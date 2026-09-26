@@ -1,10 +1,10 @@
 import os
 from typing import Literal
-from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from alert_bot_project.core_shared.redis_transport import validate_redis_transport_url
 from alert_bot_project.core_shared.secrets import SECRET_NAMES, load_secret
 
 
@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field("", repr=False, description="Runtime PostgreSQL connection string")
     MIGRATION_DATABASE_URL: str = Field("", repr=False, description="Migration-only PostgreSQL connection string")
     REDIS_URL: str = Field("redis://localhost:6379/0", repr=False, description="Connection string for Redis instance")
+    REDIS_TLS_CA_FILE: str | None = Field(None, description="Optional Redis TLS trust store")
 
     @model_validator(mode="after")
     def require_service_credentials(self) -> "Settings":
@@ -89,12 +90,7 @@ class Settings(BaseSettings):
     @field_validator("REDIS_URL")
     @classmethod
     def require_tls_for_external_redis(cls, value: str) -> str:
-        parsed = urlsplit(value)
-        if parsed.scheme not in ("redis", "rediss") or not parsed.hostname:
-            raise ValueError("REDIS_URL must be a redis:// or rediss:// URL")
-        if parsed.scheme == "redis" and parsed.hostname not in ("localhost", "127.0.0.1", "::1", "redis"):
-            raise ValueError("External Redis requires rediss:// with TLS")
-        return value
+        return validate_redis_transport_url(value)
 
     # ✅ ФИКС: Добавлены строгие диапазоны портов (ge=1024, le=65535) для предотвращения системных сбоев
     METRICS_PORT_WORKER: int = Field(8000, ge=1024, le=65535, description="Prometheus metrics port for worker service")
