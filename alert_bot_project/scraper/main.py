@@ -22,7 +22,7 @@ from alert_bot_project.core_shared.metrics import (
     start_metrics_server,
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
-from alert_bot_project.core_shared.supervision import supervise
+from alert_bot_project.core_shared.supervision import run_service, supervise
 from alert_bot_project.scraper.catchup import HistoryClient, catch_up_channel
 from alert_bot_project.scraper.outbox import ScraperOutbox
 from alert_bot_project.scraper.publisher import RedisPublisher
@@ -181,9 +181,6 @@ async def main() -> None:
         marker_cleanup_task = asyncio.create_task(expire_legacy_source_markers(), name="legacy-marker-migration")
         logger.info("Scraper background subsystem engine online.")
         await supervise({"outbox-replay": replay_outbox, "source-catchup": catchup_loop}, shutdown_event)
-    except Exception:
-        logger.exception("Scraper stopped after initialization or critical loop failure")
-        raise
     finally:
         shutdown_event.set()
         if marker_cleanup_task is not None:
@@ -194,4 +191,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_service(main, logger)

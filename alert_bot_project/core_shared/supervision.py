@@ -1,8 +1,18 @@
 """Fail visibly when a required service loop exits; always join owned tasks."""
 
 import asyncio
+import logging
 from collections.abc import Callable, Coroutine, Mapping
 from typing import Any
+
+
+def run_service(main: Callable[[], Coroutine[Any, Any, None]], logger: logging.Logger) -> None:
+    """Log through configured redacting sinks; do not print a raw traceback."""
+    try:
+        asyncio.run(main())
+    except Exception:
+        logger.exception("Service stopped after initialization or critical loop failure")
+        raise SystemExit(1) from None
 
 
 async def supervise(factories: Mapping[str, Callable[[], Coroutine[Any, Any, None]]], shutdown: asyncio.Event) -> None:

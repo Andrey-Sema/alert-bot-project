@@ -2,6 +2,8 @@
 
 import asyncio
 import importlib
+import io
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,7 +11,39 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from alert_bot_project.core_shared.supervision import supervise
+from alert_bot_project.core_shared.supervision import run_service, supervise
+
+
+def test_process_runner_logs_redacted_failure_and_exits_without_raw_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from alert_bot_project.core_shared.logging_config import RedactingConsoleFormatter, StructuredJsonFormatter
+
+    console, structured = io.StringIO(), io.StringIO()
+    logger = logging.Logger("test-service-failure")
+    for output, formatter in ((console, RedactingConsoleFormatter()), (structured, StructuredJsonFormatter())):
+        handler = logging.StreamHandler(output)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+    async def failed() -> None:
+        raise ValueError("redis://alert_worker:CONFIDENTIAL-FIXTURE@localhost:6379/0")
+
+    with pytest.raises(SystemExit) as caught:
+        run_service(failed, logger)
+    assert caught.value.code == 1
+    assert caught.value.__suppress_context__ is True
+    for output in (console, structured):
+        assert "CONFIDENTIAL-FIXTURE" not in output.getvalue()
+        assert "ValueError" in output.getvalue()
+    assert capsys.readouterr().err == ""
+
+
+def test_process_runner_returns_normally_on_requested_shutdown() -> None:
+    async def stopped() -> None:
+        return
+
+    run_service(stopped, logging.Logger("test-normal-shutdown"))
 
 
 @pytest.mark.parametrize("mode", ["return", "raise", "cancel"])

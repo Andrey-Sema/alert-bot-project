@@ -38,7 +38,7 @@ from alert_bot_project.core_shared.metrics import (
 )
 from alert_bot_project.core_shared.redis_connection import create_service_redis, verify_redis_identity
 from alert_bot_project.core_shared.schemas import AlertMessage
-from alert_bot_project.core_shared.supervision import supervise
+from alert_bot_project.core_shared.supervision import run_service, supervise
 from alert_bot_project.core_shared.text_processor import TextProcessor
 from alert_bot_project.core_shared.trigger_cache import reconcile_custom_trigger_cache
 from alert_bot_project.database.activity import prune_old_activity
@@ -658,9 +658,6 @@ async def main() -> None:
         else:
             loops["official-alarm"] = partial(alarm_poller.run, shutdown_event)
         await supervise(loops, shutdown_event)
-    except Exception:
-        logger.exception("Worker stopped after initialization or critical loop failure")
-        raise
     finally:
         shutdown_event.set()
         # Preserve pending entries for XAUTOCLAIM; do not DELCONSUMER.
@@ -671,4 +668,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_service(main, logger)
