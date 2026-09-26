@@ -17,7 +17,7 @@ def compile_credentials(password_dir: Path, acl_output: Path, exporter_output: P
     content = build_acl(passwords)
     outputs = (
         (acl_output, content),
-        (exporter_output, json.dumps({"redis://redis:6379": passwords["monitor"]}) + "\n"),
+        (exporter_output, json.dumps({"redis://alert_monitor@redis:6379": passwords["monitor"]}) + "\n"),
     )
     if acl_output.resolve() == exporter_output.resolve():
         raise ValueError("Redis credential output paths must differ")

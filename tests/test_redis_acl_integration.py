@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import re
 import time
 import urllib.request
 from collections.abc import AsyncIterator
@@ -12,6 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from prometheus_client.parser import text_string_to_metric_families
 from redis.asyncio import Redis
 from redis.exceptions import AuthenticationError, ResponseError
 
@@ -210,6 +210,7 @@ async def test_role_boundaries_and_admin_commands_are_denied(acl_clients: dict[s
         await client.get("foreign:secret")
     with pytest.raises(ResponseError):
         await client.set("foreign:secret", "overwrite")
+    assert await admin.execute_command("ACL", "DRYRUN", USERS[role], "PING") == "OK"
     for command in (
         ("FLUSHALL",),
         ("CONFIG", "SET", "maxmemory", "0"),
@@ -219,8 +220,10 @@ async def test_role_boundaries_and_admin_commands_are_denied(acl_clients: dict[s
         ("SELECT", "1"),
         ("PUBLISH", "private", "fixture"),
     ):
-        with pytest.raises(ResponseError):
-            await admin.execute_command("ACL", "DRYRUN", USERS[role], *command)
+        # DRYRUN returns a bulk string for a denial, rather than a RESP error.
+        result = await admin.execute_command("ACL", "DRYRUN", USERS[role], *command)
+        assert isinstance(result, str)
+        assert "has no permissions" in result
     if role in ("worker", "bot_ui", "monitor", "health"):
         with pytest.raises(ResponseError):
             await client.xadd("alerts_stream", {"payload": "forged"})
@@ -251,10 +254,13 @@ async def test_pinned_exporter_scrapes_without_payload_access(acl_clients: dict[
         except OSError:
             await asyncio.sleep(0.2)
             continue
-        if re.search(r"^redis_up 1$", metrics, re.MULTILINE):
+        samples = {
+            sample.name: sample.value for family in text_string_to_metric_families(metrics) for sample in family.samples
+        }
+        if samples.get("redis_up") == 1:
             break
         await asyncio.sleep(0.2)
     else:
         pytest.fail("Pinned exporter could not scrape under its limited ACL")
-    assert re.search(r"^redis_exporter_last_scrape_error 0$", metrics, re.MULTILINE)
+    assert samples.get("redis_exporter_last_scrape_error") == 0
     assert "PRIVATE-ACL-FIXTURE" not in metrics

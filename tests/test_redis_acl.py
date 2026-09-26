@@ -65,7 +65,7 @@ def test_compiler_only_exports_monitor_password(tmp_path: Path) -> None:
     values = _inputs(tmp_path)
     acl, monitor = tmp_path / "users.acl", tmp_path / "exporter.json"
     compile_credentials(tmp_path, acl, monitor)
-    assert json.loads(monitor.read_text()) == {"redis://redis:6379": values["monitor"]}
+    assert json.loads(monitor.read_text()) == {"redis://alert_monitor@redis:6379": values["monitor"]}
     assert all(password not in acl.read_text() for password in values.values())
     assert all(password not in monitor.read_text() for role, password in values.items() if role != "monitor")
     if os.name == "posix":
