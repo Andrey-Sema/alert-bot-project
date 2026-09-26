@@ -22,6 +22,7 @@ from alert_bot_project.core_shared.metrics import (
     start_metrics_server,
 )
 from alert_bot_project.core_shared.schemas import AlertMessage
+from alert_bot_project.core_shared.supervision import run_service, supervise
 from alert_bot_project.scraper.catchup import HistoryClient, catch_up_channel
 from alert_bot_project.scraper.outbox import ScraperOutbox
 from alert_bot_project.scraper.publisher import RedisPublisher
@@ -145,6 +146,7 @@ async def expire_legacy_source_markers() -> None:
 
 
 async def stop_services() -> None:
+    shutdown_event.set()
     logger.info("Initiating graceful teardown protocol stack...")
     try:
         await app.stop()
@@ -163,7 +165,7 @@ def setup_signal_handlers() -> None:
     try:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(stop_services()))
+            loop.add_signal_handler(sig, shutdown_event.set)
     except NotImplementedError:
         pass
 
@@ -173,19 +175,20 @@ async def main() -> None:
 
     setup_signal_handlers()
     logger.info("Starting Pyrogram client infrastructure tracking layer...")
-    await app.start()
-    replay_task = asyncio.create_task(replay_outbox())
-    catchup_task = asyncio.create_task(catchup_loop())
-    marker_cleanup_task = asyncio.create_task(expire_legacy_source_markers())
-    logger.info("Scraper background subsystem engine online.")
-
-    await shutdown_event.wait()
-    replay_task.cancel()
-    catchup_task.cancel()
-    marker_cleanup_task.cancel()
-    await asyncio.gather(replay_task, catchup_task, marker_cleanup_task, return_exceptions=True)
-    logger.info("Subsystem execution terminated.")
+    marker_cleanup_task: asyncio.Task[None] | None = None
+    try:
+        await app.start()
+        marker_cleanup_task = asyncio.create_task(expire_legacy_source_markers(), name="legacy-marker-migration")
+        logger.info("Scraper background subsystem engine online.")
+        await supervise({"outbox-replay": replay_outbox, "source-catchup": catchup_loop}, shutdown_event)
+    finally:
+        shutdown_event.set()
+        if marker_cleanup_task is not None:
+            marker_cleanup_task.cancel()
+            await asyncio.gather(marker_cleanup_task, return_exceptions=True)
+        await stop_services()
+        logger.info("Subsystem execution terminated.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_service(main, logger)
