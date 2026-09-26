@@ -1,13 +1,15 @@
 import asyncio
 import logging
+import ssl
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, pool, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alert_bot_project.core_shared.secrets import load_secret
 from alert_bot_project.database.models import UserTrigger
 
 logger = logging.getLogger("database.migration")
@@ -102,13 +104,27 @@ class LegacyMigrationManager:
 
 async def standalone_bootstrap() -> None:
     """Безопасный CLI-стартер для выполнения миграции в изолированном контейнере."""
-    from alert_bot_project.database.engine import AsyncSessionLocal
+    from alert_bot_project.core_shared.config import config
 
+    if config.SERVICE_ROLE != "migrator":
+        raise RuntimeError("Migrator requires SERVICE_ROLE=migrator")
+    migration_engine = create_async_engine(
+        load_secret("MIGRATION_DATABASE_URL"),
+        poolclass=pool.NullPool,
+        connect_args={
+            "ssl": ssl.create_default_context(),
+            "timeout": 5,
+            "command_timeout": 60,
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        },
+    )
+    migration_sessions = async_sessionmaker(migration_engine, expire_on_commit=False)
     logger.info("Starting manual safe database schema keys conversion routine...")
     try:
         await LegacyMigrationManager.init_database_schema()
 
-        async with AsyncSessionLocal() as session:
+        async with migration_sessions() as session:
             await LegacyMigrationManager.run_legacy_keys_migration(session)
 
         logger.info("Data migration workflow finalized cleanly.")
@@ -118,6 +134,8 @@ async def standalone_bootstrap() -> None:
     except Exception:
         logger.exception("Uncaught critical exception during standalone migration execution")
         raise
+    finally:
+        await migration_engine.dispose()
 
 
 if __name__ == "__main__":

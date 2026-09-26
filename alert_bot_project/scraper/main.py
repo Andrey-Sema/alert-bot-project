@@ -31,6 +31,9 @@ from alert_bot_project.scraper.publisher import RedisPublisher
 setup_logging("scraper")
 logger = logging.getLogger("scraper.main")
 
+if config.SERVICE_ROLE != "scraper":
+    raise RuntimeError("Scraper requires SERVICE_ROLE=scraper")
+
 SESSION_DIR = "/data/session"
 
 # Поддержка безопасных In-Memory сессий для деплоя

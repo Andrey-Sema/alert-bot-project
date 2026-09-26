@@ -42,6 +42,7 @@ from alert_bot_project.database.activity import prune_old_activity
 from alert_bot_project.database.crud import get_target_user_ids_page, get_users_by_trigger_and_category
 from alert_bot_project.database.engine import AsyncSessionLocal
 from alert_bot_project.database.models import UserTrigger
+from alert_bot_project.database.privileges import verify_runtime_privileges
 from alert_bot_project.services.ukrainealarm import AlarmStatePoller
 from alert_bot_project.worker.broadcaster import Broadcaster
 from alert_bot_project.worker.custom_matcher import CustomTriggerMatcher
@@ -603,6 +604,10 @@ async def _consume_loop(redis_client: Redis, broadcaster: Broadcaster, release_l
 
 async def main() -> None:
     logger.info("Production background alert stream analysis subsystem initialization...")
+    if config.SERVICE_ROLE != "worker":
+        raise RuntimeError("Worker requires SERVICE_ROLE=worker")
+    async with AsyncSessionLocal() as session:
+        await verify_runtime_privileges(session, "worker")
     start_metrics_server(config.METRICS_PORT_WORKER)
 
     bot = Bot(token=config.BOT_TOKEN)
